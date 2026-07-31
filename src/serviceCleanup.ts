@@ -20,13 +20,22 @@ import { Node } from "./types.js";
 
 const ESD_TEXT_CLASS = "esd-text";
 
+// Счётчик того, что реально убрала очистка — нужен только для сводной
+// плашки "Удалены (не влияет на вёрстку):" в веб-интерфейсе (см.
+// formatHtmlWithDiagnostics в formatter.ts), сам разбор дерева от него
+// не зависит.
+export interface ServiceCleanupStats {
+  esdTextClass: number;
+  tbody: number;
+}
+
 // Убирает токен esd-text из атрибута class у узла с attrsRaw — не
 // трогая остальные классы и остальные атрибуты. Если после удаления
 // класс становится пустым, убирается весь атрибут class целиком. Если
 // esd-text среди классов вообще нет — attrsRaw не трогаем ни на символ
 // (даже пробелы внутри class не перенормализуем), чтобы не менять
 // содержимое там, где очистка не требовалась.
-function stripEsdTextClass(node: { attrsRaw: string }): void {
+function stripEsdTextClass(node: { attrsRaw: string }, stats: ServiceCleanupStats): void {
   if (!node.attrsRaw) return;
   const match = /\bclass\s*=\s*("([^"]*)"|'([^']*)')/i.exec(node.attrsRaw);
   if (!match) return;
@@ -39,26 +48,28 @@ function stripEsdTextClass(node: { attrsRaw: string }): void {
   const updated =
     node.attrsRaw.slice(0, match.index) + replacement + node.attrsRaw.slice(match.index + match[0].length);
   node.attrsRaw = updated.replace(/\s{2,}/g, " ").trim();
+  stats.esdTextClass++;
 }
 
 // Рекурсивно чистит список узлов: возвращает НОВЫЙ массив (а не мутирует
 // исходный на месте), потому что <tbody> разворачивается — на его месте
 // в результирующем массиве оказывается несколько узлов (его дети) вместо
 // одного, что нельзя выразить мутацией одного элемента массива.
-export function applyServiceCleanup(nodes: Node[]): Node[] {
+export function applyServiceCleanup(nodes: Node[], stats: ServiceCleanupStats): Node[] {
   const result: Node[] = [];
   for (const node of nodes) {
     if (node.type === "element") {
-      stripEsdTextClass(node);
-      node.children = applyServiceCleanup(node.children);
+      stripEsdTextClass(node, stats);
+      node.children = applyServiceCleanup(node.children, stats);
       if (node.tagName.toLowerCase() === "tbody") {
+        stats.tbody++;
         result.push(...node.children);
         continue;
       }
     } else if (node.type === "conditional-comment") {
-      node.children = applyServiceCleanup(node.children);
+      node.children = applyServiceCleanup(node.children, stats);
     } else if (node.type === "raw-text" || node.type === "style") {
-      stripEsdTextClass(node);
+      stripEsdTextClass(node, stats);
     }
     result.push(node);
   }

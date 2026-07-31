@@ -33,6 +33,24 @@ const NBSP = "&nbsp;";
 
 const CYRILLIC_RE = /[а-яёА-ЯЁ]/;
 
+// Счётчик того, что реально поменял типограф в документе — нужен только
+// для сводной плашки "Типографика готова:" в веб-интерфейсе (см.
+// applyTypography ниже/formatHtmlWithDiagnostics в formatter.ts), сам
+// разбор текста от него никак не зависит. nbsp — общее число мест, где
+// обычный пробел заменён на неразрывный (предлоги/частицы, инициалы,
+// числа с единицами/№/§/годами/деньгами, "приклеивание" сокращений,
+// пробел перед УЖЕ существующим длинным тире); dash — сколько дефисов
+// между словами превращено в длинное тире (это отдельный, самостоятельно
+// заметный эффект, поэтому не смешивается со счётчиком nbsp, хотя каждая
+// такая замена попутно тоже вставляет неразрывный пробел); quotes —
+// сколько ПАР прямых/типографских кавычек заменено на "ёлочки" (считается
+// по закрывающей кавычке пары, не по каждому символу по отдельности).
+export interface TypografStats {
+  nbsp: number;
+  dash: number;
+  quotes: number;
+}
+
 // Границы "слова" для кириллицы: обычный \b в JS ориентирован на \w
 // (латиница/цифры/подчёркивание) и не видит кириллицу, поэтому вместо
 // него используются lookaround-проверки по \p{L}/\p{N} (юникод-классы
@@ -122,55 +140,101 @@ const DASH_RE = /(\S)[ \t]-[ \t](\S)/g;
 // 7. Пробел перед уже существующим длинным тире делаем неразрывным.
 const EXISTING_EM_DASH_RE = /(\S)[ \t]—/g;
 
-function applyPrepositionsAndParticles(text: string): string {
+function applyPrepositionsAndParticles(text: string, stats: TypografStats): string {
   return text
-    .replace(PREPOSITION_RE, (_m, word: string) => `${word}${NBSP}`)
-    .replace(PARTICLE_RE, (_m, word: string) => `${NBSP}${word}`);
+    .replace(PREPOSITION_RE, (_m, word: string) => {
+      stats.nbsp++;
+      return `${word}${NBSP}`;
+    })
+    .replace(PARTICLE_RE, (_m, word: string) => {
+      stats.nbsp++;
+      return `${NBSP}${word}`;
+    });
 }
 
-function applyInitials(text: string): string {
+function applyInitials(text: string, stats: TypografStats): string {
   return text
-    .replace(INITIALS_BEFORE_SURNAME_RE, (_m, i1: string, i2: string | undefined, surname: string) =>
-      i2 ? `${i1}${NBSP}${i2}${NBSP}${surname}` : `${i1}${NBSP}${surname}`,
-    )
+    .replace(INITIALS_BEFORE_SURNAME_RE, (_m, i1: string, i2: string | undefined, surname: string) => {
+      stats.nbsp += i2 ? 2 : 1;
+      return i2 ? `${i1}${NBSP}${i2}${NBSP}${surname}` : `${i1}${NBSP}${surname}`;
+    })
     .replace(
       SURNAME_BEFORE_INITIALS_RE,
-      (_m, surname: string, i1: string, i2: string | undefined) =>
-        i2 ? `${surname}${NBSP}${i1}${NBSP}${i2}` : `${surname}${NBSP}${i1}`,
+      (_m, surname: string, i1: string, i2: string | undefined) => {
+        stats.nbsp += i2 ? 2 : 1;
+        return i2 ? `${surname}${NBSP}${i1}${NBSP}${i2}` : `${surname}${NBSP}${i1}`;
+      },
     );
 }
 
-function applyNumbers(text: string): string {
+function applyNumbers(text: string, stats: TypografStats): string {
   return text
-    .replace(NUMBER_UNIT_RE, (_m, num: string, unit: string) => `${num}${NBSP}${unit}`)
-    .replace(NUMBER_SIGN_RE, (_m, sign: string) => `${sign}${NBSP}`)
-    .replace(YEAR_CENTURY_RE, (_m, num: string, abbr: string) => `${num}${NBSP}${abbr}`)
-    .replace(CURRENCY_RE, (_m, num: string, cur: string) => `${num}${NBSP}${cur}`);
+    .replace(NUMBER_UNIT_RE, (_m, num: string, unit: string) => {
+      stats.nbsp++;
+      return `${num}${NBSP}${unit}`;
+    })
+    .replace(NUMBER_SIGN_RE, (_m, sign: string) => {
+      stats.nbsp++;
+      return `${sign}${NBSP}`;
+    })
+    .replace(YEAR_CENTURY_RE, (_m, num: string, abbr: string) => {
+      stats.nbsp++;
+      return `${num}${NBSP}${abbr}`;
+    })
+    .replace(CURRENCY_RE, (_m, num: string, cur: string) => {
+      stats.nbsp++;
+      return `${num}${NBSP}${cur}`;
+    });
 }
 
-function applyAbbreviations(text: string): string {
+// ABBREV_GLUE_RES допускают и НУЛЕВОЙ пробел между частями сокращения
+// (уже стоит "т.д." вплотную) — в этом случае матч есть, а реально
+// заменять нечего, /[ \t]+/ внутри не находит совпадения, и m.replace
+// возвращает строку без изменений. Считаем только те случаи, где пробел
+// в исходнике правда был (и правда стал неразрывным).
+function applyAbbreviations(text: string, stats: TypografStats): string {
   let result = text;
   for (const re of ABBREV_GLUE_RES) {
-    result = result.replace(re, (m) => m.replace(/[ \t]+/, NBSP));
+    result = result.replace(re, (m) => {
+      if (/[ \t]/.test(m)) stats.nbsp++;
+      return m.replace(/[ \t]+/, NBSP);
+    });
   }
-  return result.replace(REF_ABBREV_RE, (_m, abbr: string) => `${abbr}.${NBSP}`);
+  return result.replace(REF_ABBREV_RE, (_m, abbr: string) => {
+    stats.nbsp++;
+    return `${abbr}.${NBSP}`;
+  });
 }
 
-function applyDash(text: string): string {
+// DASH_RE — дефис между словами реально становится длинным тире, это
+// самостоятельный, заметный глазу эффект (stats.dash), а не просто ещё
+// одна неразрывность. EXISTING_EM_DASH_RE — тире уже было длинным,
+// меняется только пробел перед ним (stats.nbsp), сам символ тире не
+// трогаем.
+function applyDash(text: string, stats: TypografStats): string {
   return text
-    .replace(DASH_RE, (_m, before: string, after: string) => `${before}${NBSP}— ${after}`)
-    .replace(EXISTING_EM_DASH_RE, (_m, before: string) => `${before}${NBSP}—`);
+    .replace(DASH_RE, (_m, before: string, after: string) => {
+      stats.dash++;
+      return `${before}${NBSP}— ${after}`;
+    })
+    .replace(EXISTING_EM_DASH_RE, (_m, before: string) => {
+      stats.nbsp++;
+      return `${before}${NBSP}—`;
+    });
 }
 
 // Прямые/типографские двойные кавычки -> «ёлочки». Пары чередуются
 // строго по порядку появления (открытие/закрытие) — см. известное
 // упрощение про вложенность в комментарии выше.
-function applyQuotes(text: string): string {
+function applyQuotes(text: string, stats: TypografStats): string {
   let result = "";
   let open = true;
   for (const ch of text) {
     if (ch === '"' || ch === "“" || ch === "”" || ch === "„") {
       result += open ? "«" : "»";
+      // Закрывающая кавычка — конец пары, считаем её один раз здесь, а
+      // не по каждому из двух символов пары.
+      if (!open) stats.quotes++;
       open = !open;
     } else {
       result += ch;
@@ -179,16 +243,16 @@ function applyQuotes(text: string): string {
   return result;
 }
 
-export function applyTypography(text: string): string {
+export function applyTypography(text: string, stats: TypografStats): string {
   if (!CYRILLIC_RE.test(text)) {
     return text;
   }
   let result = text;
-  result = applyQuotes(result);
-  result = applyDash(result);
-  result = applyAbbreviations(result);
-  result = applyInitials(result);
-  result = applyNumbers(result);
-  result = applyPrepositionsAndParticles(result);
+  result = applyQuotes(result, stats);
+  result = applyDash(result, stats);
+  result = applyAbbreviations(result, stats);
+  result = applyInitials(result, stats);
+  result = applyNumbers(result, stats);
+  result = applyPrepositionsAndParticles(result, stats);
   return result;
 }

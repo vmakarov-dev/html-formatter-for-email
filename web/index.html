@@ -35,9 +35,18 @@
     /* Жёлтая пара для "Пустые атрибуты (надо заполнить)" — та же схема,
        что и у status-alert (яркий текст + чуть более приглушённая рамка
        того же тона), просто жёлтая вместо красной: атрибут пустой, но
-       это не всегда прямо "ошибка", скорее "требует внимания". */
-    --warning-text: #e0be55;
-    --accent-warning: #c8a24a;
+       это не всегда прямо "ошибка", скорее "требует внимания". Сдвинута
+       чуть ближе к оранжевому (темнее исходного жёлтого) специально,
+       чтобы отличаться от --warning-text-light у "можно удалить" ниже —
+       та категория менее тревожная, чем "надо заполнить", и должна
+       читаться заметно светлее.  */
+    --warning-text: #e0a34a;
+    --accent-warning: #c98a3a;
+    /* "Можно удалить" — та же жёлтая семья, что и --warning-text выше, но
+       светлее: атрибут пустой, но решение не требуется, риска нет вовсе
+       (в отличие от "надо заполнить"), поэтому и цвет мягче. */
+    --warning-text-light: #f0d879;
+    --accent-warning-light: #d9c169;
     /* Тёмно-серая кнопка "Удалить все" у "можно удалить" — нейтральнее
        прежней красной (там это было наравне с "отклонить"/ошибкой, а
        здесь просто рутинное действие без риска). */
@@ -51,6 +60,11 @@
     /* Заливка отмеченного чекбокса (см. .option-plate input[type=checkbox])
        — та же пастельная гамма, что и .tok-val у подсветки синтаксиса. */
     --checkbox-fill: #7fb0ea;
+    /* Типографские вставки типографа (см. .tok-typography ниже) —
+       &nbsp;/тире/«ёлочки» в подсветке кода: бледно-красный, заметно
+       светлее --accent-danger/--error — это не ошибка и не тревога,
+       просто "здесь типограф что-то поправил", должен читаться мягко. */
+    --typography-color: #e6a8a8;
     font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
   }
   * { box-sizing: border-box; }
@@ -151,7 +165,7 @@
     width: fit-content;
     padding: 10px 14px;
     border-radius: var(--radius-sm);
-    font-size: 12.5px;
+    font-size: 13px;
     font-weight: 600;
     background: var(--field-bg);
     border: 1px solid var(--field-border);
@@ -168,10 +182,14 @@
   .status-plate.status-alert { color: var(--error); border-color: var(--accent-danger); }
   .status-plate.status-ok { color: var(--ok-text); border-color: var(--accent-secondary); }
   .status-plate.status-warning { color: var(--warning-text); border-color: var(--accent-warning); }
-  /* "Можно удалить" — серая, не тревожная: в отличие от "надо заполнить"
-     (та использует status-alert, красная) или незакрытых/лишних тегов,
-     эта категория не требует решения человека — атрибут просто лишний,
-     удалить его можно одной кнопкой без риска. */
+  /* "Можно удалить" — та же жёлтая семья, что и "надо заполнить" выше, но
+     заметно светлее (см. --warning-text-light): категория не требует
+     решения человека — атрибут просто лишний, удалить его можно одной
+     кнопкой без риска, поэтому и тон мягче, спокойнее. */
+  .status-plate.status-warning-light { color: var(--warning-text-light); border-color: var(--accent-warning-light); }
+  /* Плашка "Удалены (не влияет на вёрстку):" (см. updateServiceCleanupStatus)
+     — серая, нейтрально-информационная: сюда попадает контентно другая
+     категория (что убрано, а не что осталось), яркий акцент здесь не нужен. */
   .status-plate.status-muted { color: var(--label); border-color: var(--field-border); }
   /* Плашка "Пустые атрибуты (...):"  — заголовок жирным (как остальные
      плашки), список ниже уже обычным начертанием и мельче, чтобы не
@@ -181,7 +199,7 @@
     margin: 4px 0 0;
     padding-left: 16px;
     font-weight: 400;
-    font-size: 11.5px;
+    font-size: 12px;
   }
   .empty-attrs-list li { margin-top: 2px; }
   /* Номер строки в списке пустых атрибутов — кликабелен (см.
@@ -731,6 +749,59 @@
   .btn-primary:hover { background: var(--accent-hover); }
   .btn-secondary { background: var(--accent-secondary); color: var(--secondary-text); }
   .btn-secondary:hover { background: var(--accent-secondary-hover); }
+  /* "Сжать (умеренно/максимально)" (см. compressHtmlModerate/
+     compressHtmlMax/updateCompressStatus в скрипте) — .compress-group
+     просто flex-обёртка для двух .compress-frame (по одной на кнопку). */
+  .compress-group {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  /* Общая рамка вокруг кнопки и ЕЁ СОБСТВЕННОГО веса "до → после" — они
+     обязаны читаться как одна пара (у каждой кнопки свой результат
+     сжатия, см. updateCompressStatus), а не два случайных соседних
+     элемента. padding:0 слева/сверху/снизу — кнопка внутри вплотную
+     прижата к рамке с этих трёх сторон (никакого зазора между ними), у
+     обеих одинаковый border-radius:999px и одинаковая высота (у рамки —
+     только 1px рамки сверх высоты кнопки), так что рамка просто повторяет
+     контур кнопки; padding-right оставлен — там нужен воздух перед
+     текстом веса. */
+  .compress-frame {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 0 16px 0 0;
+    border-radius: 999px;
+    border: 1px solid var(--field-border);
+    background: var(--field-bg);
+  }
+  /* Тёмно-серая — то же нейтральное действие "почистить лишнее", что и у
+     --muted-btn-bg ("Удалить все" у пустых атрибутов), не тянет на себя
+     внимание так, как основные акцентные кнопки. */
+  .compress-btn {
+    padding: 11px 16px;
+    background: var(--muted-btn-bg);
+    color: var(--text);
+  }
+  .compress-btn:hover { background: var(--muted-btn-bg-hover); }
+  .compress-size {
+    display: flex;
+    align-items: center;
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--label);
+    white-space: nowrap;
+  }
+  /* Отступ у самой стрелки, а не у краёв .compress-size целиком — просьба
+     пользователя была именно про "воздух" вокруг "→", отдельно от общего
+     паддинга блока. */
+  .compress-arrow { margin: 0 8px; }
+  .compress-size-over { color: var(--error); }
+  .compress-size-ok { color: var(--ok-text); }
+  /* Заглушка "0 кб → 0 кб" (см. renderCompressPlaceholder) — до первого
+     реального форматирования: серая, не зелёная/красная — это ещё не
+     настоящий результат, красить его как правдивый вес рано. */
+  .compress-size-placeholder { color: var(--label); }
   /* margin-top совпадает с .status-plates-row (см. комментарий там) —
      тот же отступ "кнопка → второй ряд" на симметричной карточке.
      .options-row — просто обёртка (единственный прямой ребёнок .card на
@@ -873,6 +944,16 @@
   .tok-val { color: #7fb0ea; }
   .tok-comment { color: #7ecb9c; }
   .tok-doctype { color: #a49dba; }
+  /* Вставки типографа прямо в тексте (см. highlightTypographyText) —
+     &nbsp;, длинное тире, кавычки-«ёлочки»: подсвечиваются одним
+     бледно-красным цветом, чтобы сразу быть заметными в общем потоке
+     текста, но не спорить по яркости с --error/--accent-danger (это не
+     ошибка). Красится сама подстрока целиком независимо от того, где
+     она встретилась — здесь нет привязки именно к "изменённому именно
+     типографом" месту (это потребовало бы протаскивать разметку по
+     каждому символу через весь конвейер), просто "это визуально
+     типографский элемент". */
+  .tok-typography { color: var(--typography-color); }
   /* Клик по номеру строки в списке "Пустые атрибуты" (см.
      handleEmptyAttrLineClick в скрипте) — сам найденный атрибут прямо в
      #output дважды мигает красным фоном. Два цикла по 1с — суммарно 2с. */
@@ -960,11 +1041,23 @@
     </div>
     <div class="card-footer">
       <button id="copyBtn" class="btn-secondary" type="button">Скопировать</button>
+      <div id="compressGroup" class="compress-group">
+        <div class="compress-frame">
+          <button id="compressModerateBtn" class="compress-btn" type="button">Сжать (умеренно)</button>
+          <span id="compressSizeModerate" class="compress-size"></span>
+        </div>
+        <div class="compress-frame">
+          <button id="compressMaxBtn" class="compress-btn" type="button">Сжать (максимально)</button>
+          <span id="compressSizeMax" class="compress-size"></span>
+        </div>
+      </div>
     </div>
     <div class="status-plates-row">
       <div id="outputStatus" class="status-plate"></div>
       <div id="emptyAttrsFillStatus" class="status-plate"></div>
       <div id="emptyAttrsDeleteStatus" class="status-plate"></div>
+      <div id="serviceCleanupStatus" class="status-plate"></div>
+      <div id="typografyStatus" class="status-plate"></div>
     </div>
   </section>
 </main>
@@ -985,9 +1078,15 @@
   const outputStatus = document.getElementById("outputStatus");
   const emptyAttrsFillStatus = document.getElementById("emptyAttrsFillStatus");
   const emptyAttrsDeleteStatus = document.getElementById("emptyAttrsDeleteStatus");
+  const serviceCleanupStatus = document.getElementById("serviceCleanupStatus");
+  const typografyStatus = document.getElementById("typografyStatus");
   const status = document.getElementById("status");
   const formatBtn = document.getElementById("formatBtn");
   const copyBtn = document.getElementById("copyBtn");
+  const compressModerateBtn = document.getElementById("compressModerateBtn");
+  const compressMaxBtn = document.getElementById("compressMaxBtn");
+  const compressSizeModerate = document.getElementById("compressSizeModerate");
+  const compressSizeMax = document.getElementById("compressSizeMax");
   const collapseOutlookComments = document.getElementById("collapseOutlookComments");
   const typografy = document.getElementById("typografy");
   const checkUnclosedTags = document.getElementById("checkUnclosedTags");
@@ -1068,9 +1167,41 @@
   // updateEmptyAttrsStatus.
   let lastEmptyAttrsFill = [];
   let lastEmptyAttrsDelete = [];
+  // Сводки "что удалила очистка служебных атрибутов" / "что поменял
+  // типограф" (см. removedServiceItems/typografyItems в
+  // src/formatter.ts) — [{ label, count }], уже без нулевых пунктов.
+  // Те же правила обновления, что и у lastEmptyAttrsFill/Delete выше.
+  // См. updateServiceCleanupStatus/updateTypografyStatus.
+  let lastRemovedServiceItems = [];
+  let lastTypografyItems = [];
 
   function escapeHtml(s) {
     return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+
+  // Подсветка типографских вставок (см. .tok-typography в CSS) прямо в
+  // тексте текстовых узлов: "&nbsp;" (типограф вставляет её как ЛИТЕРАЛЬНУЮ
+  // строку из шести символов — см. NBSP в src/typograf.ts, а не как символ
+  // U+00A0), длинное тире "—" и кавычки-«ёлочки». Разбирается по СЫРОМУ
+  // (неэкранированному) node.value, а не поверх уже готового escapeHtml —
+  // иначе "&" из "&nbsp;" сам превратился бы в "&amp;" ДО того, как regex
+  // успел бы его найти. Обычный (не типографский) текст между совпадениями
+  // экранируется как обычно, найденные куски — оборачиваются в span поверх
+  // уже экранированного (safe) содержимого.
+  const TYPOGRAPHY_RE = /&nbsp;|—|«|»/g;
+
+  function highlightTypographyText(raw) {
+    let out = "";
+    let last = 0;
+    TYPOGRAPHY_RE.lastIndex = 0;
+    let m;
+    while ((m = TYPOGRAPHY_RE.exec(raw))) {
+      out += escapeHtml(raw.slice(last, m.index));
+      out += `<span class="tok-typography">${escapeHtml(m[0])}</span>`;
+      last = m.index + m[0].length;
+    }
+    out += escapeHtml(raw.slice(last));
+    return out;
   }
 
   // Заполняет колонку номеров строк (см. .line-numbers) — просто список
@@ -1190,7 +1321,7 @@
   function highlightNode(node) {
     switch (node.type) {
       case "text":
-        return escapeHtml(node.value);
+        return highlightTypographyText(node.value);
       case "doctype":
         return `<span class="tok-doctype">${escapeHtml(node.raw)}</span>`;
       case "comment":
@@ -2074,6 +2205,19 @@
     if (mod10 >= 2 && mod10 <= 4) return "тега";
     return "тегов";
   }
+  // Согласование числительного со словом "штука" ("1 штука, 2 штуки,
+  // 5 штук, 11 штук, 21 штука, ...") — те же mod10/mod100 правила, что и
+  // у pluralizeTag выше, просто другое существительное. Используется в
+  // сводных плашках "Удалены (не влияет на вёрстку):"/"Типографика
+  // готова:" (см. renderCountPlate).
+  function pluralizeShtuka(n) {
+    const mod10 = n % 10;
+    const mod100 = n % 100;
+    if (mod100 >= 11 && mod100 <= 14) return "штук";
+    if (mod10 === 1) return "штука";
+    if (mod10 >= 2 && mod10 <= 4) return "штуки";
+    return "штук";
+  }
   function unclosedAdjective(n) {
     const mod10 = n % 10;
     const mod100 = n % 100;
@@ -2249,6 +2393,63 @@
     }
   }
 
+  // Плашка "заголовок + bullet-список" для сводок, где вместо номеров
+  // строк — просто количество (см. CountedItem в src/formatter.ts):
+  // удалённые уже удалены, менять/находить их в выводе больше незачем,
+  // в отличие от renderEmptyAttrsPlate выше, ссылки на строки тут нет.
+  // items — уже без нулевых пунктов (см. removedServiceItems/
+  // typografyItems), пустой массив просто гасит плашку целиком.
+  function renderCountPlate(el, items, title, cls) {
+    if (items.length === 0) {
+      el.textContent = "";
+      el.className = "status-plate";
+      return;
+    }
+    el.innerHTML = "";
+    el.className = "status-plate " + cls;
+    const titleEl = document.createElement("div");
+    titleEl.className = "empty-attrs-title";
+    titleEl.textContent = title;
+    el.appendChild(titleEl);
+    const list = document.createElement("ul");
+    list.className = "empty-attrs-list";
+    for (const item of items) {
+      const li = document.createElement("li");
+      li.textContent = `${item.label}: ${item.count} ${pluralizeShtuka(item.count)}`;
+      list.appendChild(li);
+    }
+    el.appendChild(list);
+  }
+
+  // Плашка "Удалены (не влияет на вёрстку):" — что убрала "Очистка от
+  // служебных атрибутов" (class="esd-text", <tbody>, см.
+  // removedServiceItems/src/serviceCleanup.ts). Выключенный чекбокс или
+  // ручная правка вывода — молчим, как и остальные сводки; если чекбокс
+  // включён, но убирать было нечего — тоже молчим (пользователь просил
+  // не упоминать нулевые пункты, а не выводить плашку с пустым списком).
+  function updateServiceCleanupStatus() {
+    const active = cleanServiceAttrs.checked && !outputEditedManually;
+    renderCountPlate(
+      serviceCleanupStatus,
+      active ? lastRemovedServiceItems : [],
+      "Удалены (не влияет на вёрстку):",
+      "status-muted",
+    );
+  }
+
+  // Плашка "Типографика готова:" — что поменял типограф (неразрывные
+  // пробелы/тире/кавычки, см. typografyItems/src/typograf.ts). Те же
+  // правила показа/молчания, что и у updateServiceCleanupStatus.
+  function updateTypografyStatus() {
+    const active = typografy.checked && !outputEditedManually;
+    renderCountPlate(
+      typografyStatus,
+      active ? lastTypografyItems : [],
+      "Типографика готова:",
+      "status-ok",
+    );
+  }
+
   // lastEmptyAttrsFill/Delete обновляются только в applyFormatResult (не
   // трогаются при accept/reject подсказок по тегам — независимая
   // диагностика), но функция вызывается и из renderOutput — чтобы сразу
@@ -2280,7 +2481,7 @@
       emptyAttrsDeleteStatus,
       showDelete,
       "Пустые атрибуты (можно удалить):",
-      "status-muted",
+      "status-warning-light",
       true,
     );
   }
@@ -2448,6 +2649,9 @@
     updateScrollHints();
     updateOutputStatus();
     updateEmptyAttrsStatus();
+    updateServiceCleanupStatus();
+    updateTypografyStatus();
+    updateCompressStatus();
     updateOutputEditableState();
   }
 
@@ -2510,6 +2714,8 @@
     outputEditedManually = false;
     lastEmptyAttrsFill = [];
     lastEmptyAttrsDelete = [];
+    lastRemovedServiceItems = [];
+    lastTypografyItems = [];
     if (!source.trim()) {
       lastCleanHtml = "";
       workingTags = [];
@@ -2524,6 +2730,8 @@
         extraTags,
         emptyAttrsToFill,
         emptyAttrsToDelete,
+        removedServiceItems,
+        typografyItems,
       } = window.HtmlFormatter.formatHtmlWithDiagnostics(source, {
         collapseOutlookComments: collapseOutlookComments.checked,
         typografy: typografy.checked,
@@ -2532,6 +2740,8 @@
       lastCleanHtml = html;
       lastEmptyAttrsFill = emptyAttrsToFill;
       lastEmptyAttrsDelete = emptyAttrsToDelete;
+      lastRemovedServiceItems = removedServiceItems;
+      lastTypografyItems = typografyItems;
       totalFlaggedCount = unclosedTags.length + unopenedTags.length + extraTags.length;
       // При выключенной опции просто не показываем ни одной подсказки —
       // сам formatHtmlWithDiagnostics всё равно считает диагностику (это
@@ -2649,6 +2859,141 @@
     } catch {
       status.textContent = "Не удалось скопировать в буфер обмена.";
     }
+  });
+
+  // "Сжать (умеренно)" (см. .compress-group в CSS) — убирает только
+  // ведущие пробелы/табы каждой строки (отступ, всегда добавлен
+  // форматтером — не часть содержимого письма), сами переносы строк не
+  // трогает: количество строк остаётся тем же, что и до сжатия, просто
+  // все они прижимаются к левому краю.
+  function compressHtmlModerate(html) {
+    return html
+      .split("\n")
+      .map((line) => line.replace(/^[ \t]+/, ""))
+      .join("\n");
+  }
+
+  // "Сжать (максимально)" — то же самое плюс сами переносы строк тоже
+  // убираются (вся разметка — в одну строку). Пробелы МЕЖДУ атрибутами и
+  // ВНУТРИ текстового содержимого — они всегда стоят не в начале строки
+  // — не трогаем ни там, ни там. Строки в этом форматтере никогда не
+  // переносятся посреди текста (см. white-space:pre/no-wrap у #output в
+  // CSS — длинные строки скроллятся горизонтально, а не переносятся), так
+  // что склеивать соседние строки без разделителя после обрезки отступа
+  // безопасно: не бывает случая, когда перенос строки — это на самом деле
+  // "пробел посреди фразы".
+  function compressHtmlMax(html) {
+    return html
+      .split("\n")
+      .map((line) => line.replace(/^[ \t]+/, "").replace(/\t/g, ""))
+      .join("");
+  }
+
+  // Вес в КБ (1024 байта) для сводки у "Сжать" — байты, а не JS .length:
+  // .length считает UTF-16 code units, а не байты, и на кириллическом
+  // тексте (почти весь контент реальных писем) сильно занижал бы вес
+  // относительно того, сколько реально весит файл в UTF-8.
+  function byteSize(str) {
+    return new TextEncoder().encode(str).length;
+  }
+  function formatKb(bytes) {
+    return Math.round(bytes / 1024) + " кб";
+  }
+  // 102 КБ — реальный практический порог: именно на нём Gmail обрезает
+  // слишком тяжёлые HTML-письма ("Показать целиком письмо"), после чего
+  // хвост вёрстки (a значит и её работоспособность) не гарантирован.
+  const GMAIL_CLIP_BYTES = 102 * 1024;
+
+  // Заполняет один "до → после" (см. .compress-size в CSS) — общий кусок
+  // для обеих кнопок, у каждой свой afterHtml (результат ИМЕННО её
+  // сжатия, см. updateCompressStatus), поэтому "после" у них закономерно
+  // разное. Обе цифры красятся НЕЗАВИСИМО друг от друга по одному и тому
+  // же порогу (см. GMAIL_CLIP_BYTES) — то, что "было" красное, а "стало"
+  // зелёное, наглядно показывает, что именно это сжатие решает проблему
+  // (и наоборот, если обе остались красными — этого сжатия недостаточно).
+  function renderCompressSize(el, beforeBytes, afterHtml) {
+    const afterBytes = byteSize(afterHtml);
+    el.innerHTML = "";
+    const beforeSpan = document.createElement("span");
+    beforeSpan.className = beforeBytes > GMAIL_CLIP_BYTES ? "compress-size-over" : "compress-size-ok";
+    beforeSpan.textContent = formatKb(beforeBytes);
+    const arrow = document.createElement("span");
+    arrow.className = "compress-arrow";
+    arrow.textContent = "→";
+    const afterSpan = document.createElement("span");
+    afterSpan.className = afterBytes > GMAIL_CLIP_BYTES ? "compress-size-over" : "compress-size-ok";
+    afterSpan.textContent = formatKb(afterBytes);
+    el.appendChild(beforeSpan);
+    el.appendChild(arrow);
+    el.appendChild(afterSpan);
+  }
+
+  // Заглушка "0 кб → 0 кб" (см. .compress-size-placeholder в CSS) — пока
+  // ещё нет ни одного реального форматирования (пустой lastCleanHtml, то
+  // есть только что открытая страница или пустое поле ввода): кнопки
+  // остаются на месте (клик по ним и так безвредный no-op, см. guard
+  // "if (!lastCleanHtml) return" ниже), просто цифры пока не настоящие.
+  function renderCompressPlaceholder(el) {
+    el.innerHTML = "";
+    const beforeSpan = document.createElement("span");
+    beforeSpan.className = "compress-size-placeholder";
+    beforeSpan.textContent = "0 кб";
+    const arrow = document.createElement("span");
+    arrow.className = "compress-arrow";
+    arrow.textContent = "→";
+    const afterSpan = document.createElement("span");
+    afterSpan.className = "compress-size-placeholder";
+    afterSpan.textContent = "0 кб";
+    el.appendChild(beforeSpan);
+    el.appendChild(arrow);
+    el.appendChild(afterSpan);
+  }
+
+  // Сводки "было → станет" рядом с каждой кнопкой "Сжать" — живые,
+  // пересчитываются при каждом renderOutput (как и остальные
+  // status-плашки), а не только по клику: пользователь должен видеть,
+  // сколько сожмётся, ДО того, как решит нажимать.
+  function updateCompressStatus() {
+    if (!lastCleanHtml) {
+      renderCompressPlaceholder(compressSizeModerate);
+      renderCompressPlaceholder(compressSizeMax);
+      return;
+    }
+    const beforeBytes = byteSize(lastCleanHtml);
+    renderCompressSize(compressSizeModerate, beforeBytes, compressHtmlModerate(lastCleanHtml));
+    renderCompressSize(compressSizeMax, beforeBytes, compressHtmlMax(lastCleanHtml));
+  }
+  // Заглушка видна сразу при открытии страницы — до этого момента
+  // updateCompressStatus вызывается только изнутри renderOutput, а тот
+  // сам по себе на старте не запускается (нет форматирования без клика
+  // на "Форматировать").
+  updateCompressStatus();
+
+  // Общий сброс состояния после сжатия (обеими кнопками) — тот же приём,
+  // что и у ручной правки #outputEditor (см. его "input"-listener выше):
+  // прежние построчные диагностики (workingTags) после сжатия теряют
+  // смысл как позиции (у "максимально" строк вообще не остаётся, у
+  // "умеренно" строки те же, но сама диагностика уже успела устареть —
+  // подтверждать её заново придётся полным форматированием).
+  function applyCompressed(compressed) {
+    lastCleanHtml = compressed;
+    workingTags = [];
+    rejectedCount = 0;
+    totalFlaggedCount = 0;
+    outputEditedManually = true;
+    renderOutput();
+  }
+
+  // Заменяют вывод сжатой версией НАПРЯМУЮ (не через
+  // formatHtmlWithDiagnostics: повторный прогон форматтера заново
+  // расставил бы отступы, полностью отменив сжатие).
+  compressModerateBtn.addEventListener("click", () => {
+    if (!lastCleanHtml) return;
+    applyCompressed(compressHtmlModerate(lastCleanHtml));
+  });
+  compressMaxBtn.addEventListener("click", () => {
+    if (!lastCleanHtml) return;
+    applyCompressed(compressHtmlMax(lastCleanHtml));
   });
 
   input.addEventListener("keydown", (e) => {

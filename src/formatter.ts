@@ -1,8 +1,8 @@
 import { parseHtml, normalizeAttrsWhitespace } from "./parser.js";
 import { formatCss } from "./cssFormatter.js";
 import { isNeverCollapseElement } from "./htmlTags.js";
-import { applyTypography } from "./typograf.js";
-import { applyServiceCleanup } from "./serviceCleanup.js";
+import { applyTypography, TypografStats } from "./typograf.js";
+import { applyServiceCleanup, ServiceCleanupStats } from "./serviceCleanup.js";
 import { REQUIRED_PARENT } from "./unopenedTags.js";
 import { ElementNode, Node } from "./types.js";
 
@@ -1078,14 +1078,38 @@ const DEFAULT_OPTIONS: ResolvedFormatOptions = {
 // безопасна). Теги/атрибуты/содержимое script,pre,style и обычные
 // комментарии не входят в число текстовых узлов вовсе, поэтому их
 // заведомо не трогаем — обходить их отдельно не нужно.
-function applyTypographyToTree(nodes: Node[]): void {
+function applyTypographyToTree(nodes: Node[], stats: TypografStats): void {
   for (const node of nodes) {
     if (node.type === "text") {
-      node.value = applyTypography(node.value);
+      node.value = applyTypography(node.value, stats);
     } else if (node.type === "element" || node.type === "conditional-comment") {
-      applyTypographyToTree(node.children);
+      applyTypographyToTree(node.children, stats);
     }
   }
+}
+
+// Сырые счётчики (см. TypografStats/ServiceCleanupStats) в человекочитаемый
+// список "подпись: количество" для сводных плашек в веб-интерфейсе —
+// пункты с нулевым счётчиком в список не попадают вовсе (см. запрос
+// пользователя: "если 0 раз — не упоминаем").
+export interface CountedItem {
+  label: string;
+  count: number;
+}
+
+function typografStatsToItems(stats: TypografStats): CountedItem[] {
+  const items: CountedItem[] = [];
+  if (stats.nbsp > 0) items.push({ label: "Неразрывные пробелы", count: stats.nbsp });
+  if (stats.dash > 0) items.push({ label: "Тире вместо дефиса", count: stats.dash });
+  if (stats.quotes > 0) items.push({ label: "Кавычки «ёлочки» вместо «лапок»", count: stats.quotes });
+  return items;
+}
+
+function serviceCleanupStatsToItems(stats: ServiceCleanupStats): CountedItem[] {
+  const items: CountedItem[] = [];
+  if (stats.esdTextClass > 0) items.push({ label: 'class="esd-text"', count: stats.esdTextClass });
+  if (stats.tbody > 0) items.push({ label: "<tbody>", count: stats.tbody });
+  return items;
 }
 
 export interface FormatResult {
@@ -1110,6 +1134,12 @@ export interface FormatResult {
   // (остальные, включая width НЕ у <img>). Пустой массив — таких нет.
   emptyAttrsToFill: EmptyAttrGroup[];
   emptyAttrsToDelete: EmptyAttrGroup[];
+  // Сводки для плашек "Удалены (не влияет на вёрстку):" и "Типографика
+  // готова:" в веб-интерфейсе (см. typografStatsToItems/
+  // serviceCleanupStatsToItems выше) — пустой массив, если соответствующая
+  // опция была выключена или ничего менять не потребовалось.
+  removedServiceItems: CountedItem[];
+  typografyItems: CountedItem[];
 }
 
 export function formatHtmlWithDiagnostics(
@@ -1118,11 +1148,13 @@ export function formatHtmlWithDiagnostics(
 ): FormatResult {
   const doc = parseHtml(source);
   const resolved: ResolvedFormatOptions = { ...DEFAULT_OPTIONS, ...options };
+  const serviceCleanupStats: ServiceCleanupStats = { esdTextClass: 0, tbody: 0 };
   if (resolved.cleanServiceAttrs) {
-    doc.children = applyServiceCleanup(doc.children);
+    doc.children = applyServiceCleanup(doc.children, serviceCleanupStats);
   }
+  const typografStats: TypografStats = { nbsp: 0, dash: 0, quotes: 0 };
   if (resolved.typografy) {
-    applyTypographyToTree(doc.children);
+    applyTypographyToTree(doc.children, typografStats);
   }
   const renderer = new Renderer(resolved);
   const html = renderer.render(doc.children);
@@ -1133,6 +1165,8 @@ export function formatHtmlWithDiagnostics(
     extraTags: renderer.getExtraTags(),
     emptyAttrsToFill: renderer.getEmptyAttrsToFill(),
     emptyAttrsToDelete: renderer.getEmptyAttrsToDelete(),
+    removedServiceItems: serviceCleanupStatsToItems(serviceCleanupStats),
+    typografyItems: typografStatsToItems(typografStats),
   };
 }
 
