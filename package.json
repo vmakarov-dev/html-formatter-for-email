@@ -1,0 +1,22 @@
+{
+  "name": "html-formatter",
+  "version": "0.1.0",
+  "description": "Локальный офлайн-форматтер HTML-кода",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "html-formatter": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "build:web": "tsc -p tsconfig.json && node scripts/build-web-bundle.mjs",
+    "test": "node --import tsx --test tests/**/*.test.ts",
+    "cli": "tsx bin/cli.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

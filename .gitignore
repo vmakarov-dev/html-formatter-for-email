@@ -1,0 +1,6 @@
+node_modules/
+dist/
+web/formatter.bundle.js
+.DS_Store
+проверка (удалить).html
+.claude/settings.local.json
