@@ -1041,3 +1041,67 @@ test("регрессия: многострочный HTML-комментарий
   // случайное со сдвигом из-за многострочного комментария выше.
   assert.equal(html.split("\n")[6], "</div>");
 });
+
+test("подсчёт типографа: неразрывный пробел после предлога 'в'", () => {
+  const { typografyItems } = formatHtmlWithDiagnostics("<p>Он живёт в доме.</p>");
+  assert.deepEqual(typografyItems, [{ label: "Неразрывные пробелы", count: 1 }]);
+});
+
+test("подсчёт типографа: дефис между словами становится длинным тире", () => {
+  const { typografyItems } = formatHtmlWithDiagnostics("<p>Слово - слово.</p>");
+  assert.deepEqual(typografyItems, [{ label: "Тире вместо дефиса", count: 1 }]);
+});
+
+test("подсчёт типографа: прямые кавычки становятся «ёлочками», считается по парам", () => {
+  const { typografyItems } = formatHtmlWithDiagnostics('<p>Он сказал "привет".</p>');
+  assert.deepEqual(typografyItems, [{ label: "Кавычки «ёлочки» вместо «лапок»", count: 1 }]);
+});
+
+test("подсчёт типографа: несколько срабатываний разных правил суммируются в отдельные пункты", () => {
+  const { typografyItems } = formatHtmlWithDiagnostics('<p>Он сказал "привет" и "пока".</p>');
+  assert.deepEqual(typografyItems, [
+    { label: "Неразрывные пробелы", count: 1 },
+    { label: "Кавычки «ёлочки» вместо «лапок»", count: 2 },
+  ]);
+});
+
+test("подсчёт типографа: выключенная опция typografy — пустой список, даже если в тексте есть дефис", () => {
+  const { typografyItems } = formatHtmlWithDiagnostics("<p>Слово - слово.</p>", { typografy: false });
+  assert.deepEqual(typografyItems, []);
+});
+
+test("подсчёт типографа: текст без кириллицы не считается вовсе (см. CYRILLIC_RE в typograf.ts)", () => {
+  const { typografyItems } = formatHtmlWithDiagnostics('<p>Hello - world "quote".</p>');
+  assert.deepEqual(typografyItems, []);
+});
+
+test("подсчёт очистки служебных атрибутов: class=\"esd-text\" и <tbody> считаются отдельно", () => {
+  const input = '<table class="esd-text"><tbody><tr><td class="esd-text foo">x</td></tr></tbody></table>';
+  const { removedServiceItems, html } = formatHtmlWithDiagnostics(input, { typografy: false });
+  assert.deepEqual(removedServiceItems, [
+    { label: 'class="esd-text"', count: 2 },
+    { label: "<tbody>", count: 1 },
+  ]);
+  // Сам класс убран целиком у table (был единственным), у td остался
+  // только "foo", <tbody> развёрнут — <tr> теперь прямой ребёнок <table>.
+  assert.equal(
+    html,
+    ["<table>", "  <tr>", '    <td class="foo">', "      x", "    </td>", "  </tr>", "</table>"].join("\n"),
+  );
+});
+
+test("подсчёт очистки служебных атрибутов: выключенная опция cleanServiceAttrs — пустой список", () => {
+  const input = '<table class="esd-text"><tbody><tr><td>x</td></tr></tbody></table>';
+  const { removedServiceItems } = formatHtmlWithDiagnostics(input, {
+    typografy: false,
+    cleanServiceAttrs: false,
+  });
+  assert.deepEqual(removedServiceItems, []);
+});
+
+test("подсчёт очистки служебных атрибутов: нечего убирать — пустой список", () => {
+  const { removedServiceItems } = formatHtmlWithDiagnostics("<table><tr><td>x</td></tr></table>", {
+    typografy: false,
+  });
+  assert.deepEqual(removedServiceItems, []);
+});
