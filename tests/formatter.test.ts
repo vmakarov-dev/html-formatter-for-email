@@ -378,6 +378,57 @@ test("типограф: typografy: false отключает преобразов
   assert.equal(out, input);
 });
 
+test("типограф (английский): короткие слова приклеиваются к следующему слову", () => {
+  const input = `<p>I am a big fan of the new update.</p>`;
+  const out = formatHtml(input);
+  assert.equal(out, "<p>I&nbsp;am a&nbsp;big fan of&nbsp;the&nbsp;new update.</p>");
+});
+
+test("типограф (английский): инициалы и фамилия", () => {
+  const input = `<p>J. R. R. Tolkien wrote this.</p>`;
+  const out = formatHtml(input);
+  assert.equal(out, "<p>J.&nbsp;R.&nbsp;R.&nbsp;Tolkien wrote this.</p>");
+});
+
+test("типограф (английский): единицы измерения, валюта в обе стороны, время, ссылочные сокращения", () => {
+  const input = `<p>Run 10 km in 20 min for $ 5, pay 5 $ later, open at 9 a.m., see p. 25.</p>`;
+  const out = formatHtml(input);
+  assert.equal(
+    out,
+    "<p>Run 10&nbsp;km in&nbsp;20&nbsp;min for $&nbsp;5, pay 5&nbsp;$ later, open at&nbsp;9&nbsp;a.m., see p.&nbsp;25.</p>",
+  );
+});
+
+test("типограф (английский): склеивание сокращений e.g./i.e.", () => {
+  const input = `<p>e. g. this works, i. e. it is tested.</p>`;
+  const out = formatHtml(input);
+  assert.equal(out, "<p>e.&nbsp;g. this works, i.&nbsp;e. it is&nbsp;tested.</p>");
+});
+
+test("типограф (английский): дефис между словами -> длинное тире без пробелов", () => {
+  const input = `<p>Save today - do not miss out.</p>`;
+  const out = formatHtml(input);
+  assert.equal(out, "<p>Save today—do not miss out.</p>");
+});
+
+test("типограф (английский): двойные кавычки -> смарт-кавычки “ ”", () => {
+  const input = `<p>Do not go there, "friend" - trust me.</p>`;
+  const out = formatHtml(input);
+  assert.equal(out, "<p>Do not go there, “friend”—trust me.</p>");
+});
+
+test("типограф (английский): апострофы/одинарные кавычки по эвристике 'умных кавычек'", () => {
+  const input = `<p>Do not miss it, it's huge. 'Quoted' word.</p>`;
+  const out = formatHtml(input);
+  assert.equal(out, "<p>Do not miss it, it’s huge. ‘Quoted’ word.</p>");
+});
+
+test("типограф (английский): ${...}-вставки защищены от английских правил (например, 'or' внутри выражения)", () => {
+  const input = `<p>\${Order.Total > 100 or Order.HasDiscount} plain text or more.</p>`;
+  const out = formatHtml(input);
+  assert.equal(out, "<p>${Order.Total > 100 or Order.HasDiscount} plain text or&nbsp;more.</p>");
+});
+
 test("типограф: не трогает атрибуты, содержимое script/style и обычные комментарии", () => {
   const input =
     `<div title="привет - пока" data-x="в доме">` +
@@ -402,10 +453,10 @@ test("типограф: не трогает атрибуты, содержимо
   );
 });
 
-test("типограф: чисто латинский текст не трогаем (нет кириллицы рядом)", () => {
+test("типограф: чисто латинский текст обрабатывается английскими правилами (нет кириллицы рядом)", () => {
   const input = `<p>This is "pure" English - text, no changes here.</p>`;
   const out = formatHtml(input);
-  assert.equal(out, input);
+  assert.equal(out, "<p>This is&nbsp;“pure” English—text, no changes here.</p>");
 });
 
 test("диагностика незакрытых тегов: простой случай — <span> внутри не закрыт", () => {
@@ -1070,9 +1121,25 @@ test("подсчёт типографа: выключенная опция typog
   assert.deepEqual(typografyItems, []);
 });
 
-test("подсчёт типографа: текст без кириллицы не считается вовсе (см. CYRILLIC_RE в typograf.ts)", () => {
+test("подсчёт типографа: текст без кириллицы, но с латиницей — тоже считается (английские правила)", () => {
   const { typografyItems } = formatHtmlWithDiagnostics('<p>Hello - world "quote".</p>');
+  assert.deepEqual(typografyItems, [
+    { label: "Тире вместо дефиса", count: 1 },
+    { label: "Кавычки «ёлочки» вместо «лапок»", count: 1 },
+  ]);
+});
+
+test("подсчёт типографа: текст без букв (только цифры/символы) не считается вовсе", () => {
+  const { typografyItems } = formatHtmlWithDiagnostics("<p>123 - 456.</p>");
   assert.deepEqual(typografyItems, []);
+});
+
+test("подсчёт типографа (английский): несколько правил сразу — тире и кавычки суммируются в отдельные пункты", () => {
+  const { typografyItems } = formatHtmlWithDiagnostics('<p>Do not go there, "friend" - trust me.</p>');
+  assert.deepEqual(typografyItems, [
+    { label: "Тире вместо дефиса", count: 1 },
+    { label: "Кавычки «ёлочки» вместо «лапок»", count: 1 },
+  ]);
 });
 
 test("подсчёт очистки служебных атрибутов: class=\"esd-text\" и <tbody> считаются отдельно", () => {

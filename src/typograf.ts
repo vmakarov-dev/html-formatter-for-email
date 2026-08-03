@@ -1,15 +1,19 @@
 // Типограф: расстановка неразрывных пробелов, замена прямых кавычек на
-// «ёлочки» и дефиса-между-словами на длинное тире — по правилам русской
-// типографики.
+// «ёлочки»/смарт-кавычки и дефиса-между-словами на тире — по правилам
+// русской ИЛИ английской типографики, в зависимости от текста.
 //
 // Область применения: вызывающая сторона (formatter.ts) передаёт сюда
 // только содержимое текстовых узлов (TextNode.value) — теги, атрибуты,
 // содержимое <script>/<pre>/<style>, обычные комментарии сюда не
 // попадают вовсе, им applyTypography не нужен.
 //
-// Язык: если во всём переданном фрагменте текста нет ни одной
-// кириллической буквы, текст возвращается без изменений — англоязычные
-// куски не трогаем (см. обсуждение: "определять по кириллице рядом").
+// Язык: если во всём переданном фрагменте текста есть хоть одна
+// кириллическая буква — применяются русские правила (см.
+// applyTypographyToPlainText), английские слова внутри такого текста
+// правилам не подчиняются, кроме кавычек вокруг них (см. applyQuotes —
+// "лапки" для нерусской вставки). Если кириллицы нет вовсе, но есть
+// латиница — применяются английские правила (applyTypographyToPlainTextEn).
+// Текст без букв обоих алфавитов (только цифры/символы) не трогается.
 //
 // Неразрывный пробел вставляется как HTML-сущность "&nbsp;", а не как
 // сырой символ U+00A0: во-первых, это привычнее видеть в HTML-исходнике,
@@ -32,6 +36,7 @@
 const NBSP = "&nbsp;";
 
 const CYRILLIC_RE = /[а-яёА-ЯЁ]/;
+const LATIN_RE = /[a-zA-Z]/;
 
 // Счётчик того, что реально поменял типограф в документе — нужен только
 // для сводной плашки "Типографика готова:" в веб-интерфейсе (см.
@@ -261,6 +266,160 @@ function applyQuotes(text: string, stats: TypografStats): string {
   return result;
 }
 
+// ==========================================================
+// Английская типографика — тот же набор категорий правил, что и у
+// русской версии выше, адаптированный под английские конвенции (принято
+// на этапе обсуждения):
+// - короткие слова приклеиваются к СЛЕДУЮЩЕМУ слову неразрывным пробелом
+//   (аналог русских предлогов) — расширенный список: a, an, the, to, of,
+//   in, on, at, by, or, is, I. Аналога PARTICLES (слов, липнущих к
+//   ПРЕДЫДУЩЕМУ) в английском нет.
+// - тире между словами: "word - word" -> "word—word" — длинное тире БЕЗ
+//   пробелов (американский стиль, Chicago Manual of Style), а не с
+//   пробелами, как в русском варианте. Уже стоящее тире с пробелами
+//   (короткое или длинное) тоже нормализуется в этот вид.
+// - кавычки: двойные "..." — та же applyQuotes, что и у русского текста:
+//   при отсутствии кириллицы ВЕЗДЕ в обрабатываемом фрагменте она уже
+//   сама по себе выбирает "лапки" (те же смарт-кавычки “ ”, что нужны
+//   английскому тексту) для каждой пары — отдельной функции не требуется.
+//   Одинарные кавычки/апострофы — по стандартной эвристике "умных
+//   кавычек": буква/цифра перед ' значит апостроф или закрывающая
+//   кавычка (’), иначе — открывающая (‘).
+const EN_NOT_WORD_BEFORE = NOT_WORD_BEFORE;
+const EN_NOT_WORD_AFTER = NOT_WORD_AFTER;
+
+// 1. Короткие слова — не отрываются от следующего слова.
+const EN_SHORT_WORDS = ["a", "an", "the", "to", "of", "in", "on", "at", "by", "or", "is"];
+const EN_SHORT_WORD_RE = new RegExp(
+  `${EN_NOT_WORD_BEFORE}(${EN_SHORT_WORDS.slice().sort(byLengthDesc).join("|")})${EN_NOT_WORD_AFTER}[ \\t]+(?=\\S)`,
+  "giu",
+);
+// "I" (местоимение) — только заглавная форма, регистрозависимо (в
+// отличие от остальных коротких слов): строчная "i" почти всегда часть
+// другого слова, а не самостоятельное местоимение.
+const EN_I_RE = new RegExp(`${EN_NOT_WORD_BEFORE}(I)${EN_NOT_WORD_AFTER}[ \\t]+(?=\\S)`, "gu");
+
+function applyEnShortWords(text: string, stats: TypografStats): string {
+  return text
+    .replace(EN_SHORT_WORD_RE, (_m, word: string) => {
+      stats.nbsp++;
+      return `${word}${NBSP}`;
+    })
+    .replace(EN_I_RE, (_m, word: string) => {
+      stats.nbsp++;
+      return `${word}${NBSP}`;
+    });
+}
+
+// 2. Инициалы и фамилия: "J. R. R. Tolkien" — от 1 до 4 инициалов подряд
+// (глухих или разделённых пробелом), затем фамилия с заглавной буквы.
+// Известное упрощение (тот же класс, что и у русской версии, см. комментарий
+// в начале файла): случайное совпадение вида "U.S.Steel" тоже подойдёт
+// под шаблон "инициалы + слово с заглавной" — смыслового разбора нет.
+const EN_INITIALS_BEFORE_SURNAME_RE = /((?:[A-Z]\.[ \t]*){1,4})([A-Z][a-z]+)/g;
+
+function applyEnInitials(text: string, stats: TypografStats): string {
+  return text.replace(EN_INITIALS_BEFORE_SURNAME_RE, (_m, initialsPart: string, surname: string) => {
+    const initials = initialsPart.match(/[A-Z]\./g);
+    if (!initials) return _m;
+    stats.nbsp += initials.length;
+    return initials.join(NBSP) + NBSP + surname;
+  });
+}
+
+// 3. Числа: единицы измерения, валюта (в любом порядке символ/число, в
+// отличие от русского — в английском знак валюты обычно идёт ПЕРЕД
+// числом), время (a.m./p.m.), ссылочные сокращения перед числом.
+const EN_UNITS = [
+  "km", "cm", "mm", "m",
+  "kg", "mg", "g", "lb", "oz",
+  "mph", "ft", "in", "mi", "yd",
+  "kWh", "MHz", "GHz", "Hz", "kW", "W", "V", "A",
+  "°C", "°F",
+  "%",
+  "min", "hr", "sec", "s",
+  "pt", "pc",
+];
+const EN_NUMBER_UNIT_RE = new RegExp(
+  `(\\d)[ \\t]+(${EN_UNITS.slice().sort(byLengthDesc).join("|")})${EN_NOT_WORD_AFTER}`,
+  "gu",
+);
+
+const EN_CURRENCY_RE = /(\d)[ \t]+(\$|€|£)|(\$|€|£)[ \t]+(\d)/g;
+
+const EN_TIME_RE = /(\d)[ \t]+([ap]\.m\.|[AP]\.M\.|[ap]m|[AP]M)/g;
+
+// Сокращения-ссылки перед числом ("p. 25", "pp. 10", "Vol. 2", "Fig. 3",
+// "Ch. 4", "No. 5").
+const EN_REF_ABBREV_RE = new RegExp(
+  `${EN_NOT_WORD_BEFORE}(pp|p|Vol|Fig|Ch|No)\\.[ \\t]+(?=\\d)`,
+  "gu",
+);
+
+function applyEnNumbers(text: string, stats: TypografStats): string {
+  return text
+    .replace(EN_NUMBER_UNIT_RE, (_m, num: string, unit: string) => {
+      stats.nbsp++;
+      return `${num}${NBSP}${unit}`;
+    })
+    .replace(EN_CURRENCY_RE, (_m, num: string | undefined, curAfter: string, curBefore: string, numAfter: string) => {
+      stats.nbsp++;
+      return num !== undefined ? `${num}${NBSP}${curAfter}` : `${curBefore}${NBSP}${numAfter}`;
+    })
+    .replace(EN_TIME_RE, (_m, num: string, period: string) => {
+      stats.nbsp++;
+      return `${num}${NBSP}${period}`;
+    })
+    .replace(EN_REF_ABBREV_RE, (_m, abbr: string) => {
+      stats.nbsp++;
+      return `${abbr}.${NBSP}`;
+    });
+}
+
+// 4. Сокращения, склеиваемые между своими частями ("e. g." -> "e.&nbsp;g.").
+const EN_ABBREV_GLUE_RES = [/e\.[ \t]*g\./gi, /i\.[ \t]*e\./gi];
+
+function applyEnAbbreviations(text: string, stats: TypografStats): string {
+  let result = text;
+  for (const re of EN_ABBREV_GLUE_RES) {
+    result = result.replace(re, (m) => {
+      if (/[ \t]/.test(m)) stats.nbsp++;
+      return m.replace(/[ \t]+/, NBSP);
+    });
+  }
+  return result;
+}
+
+// 5. Дефис/короткое/длинное тире между словами -> длинное тире БЕЗ
+// пробелов (в отличие от русского варианта — см. комментарий класса выше).
+const EN_DASH_RE = /(\S)[ \t](?:-|–|—)[ \t](\S)/g;
+
+function applyEnDash(text: string, stats: TypografStats): string {
+  return text.replace(EN_DASH_RE, (_m, before: string, after: string) => {
+    stats.dash++;
+    return `${before}—${after}`;
+  });
+}
+
+// 6. Апострофы/одинарные кавычки -> типографские ’/‘ по эвристике "умных
+// кавычек": буква/цифра перед символом — апостроф или закрывающая
+// кавычка (’), иначе — открывающая (‘). В отличие от applyQuotes (парные
+// двойные кавычки), здесь пары не ищутся вовсе — апостроф в контексте
+// английских сокращений ("don't", "it's") встречается на порядок чаще,
+// чем настоящая одинарная кавычка, и не парный по своей природе.
+function applyEnApostrophes(text: string, stats: TypografStats): string {
+  let count = 0;
+  const result = text.replace(/'/g, (_match: string, offset: number, full: string) => {
+    const prev = offset > 0 ? full[offset - 1] : "";
+    count++;
+    return /[\p{L}\p{N}]/u.test(prev) ? "’" : "‘";
+  });
+  if (count > 0) stats.quotes += count;
+  return result;
+}
+// === КОНЕЦ: английская типографика ===
+// ==========================================================
+
 // ${...} — инлайн-подстановка значения в шаблонизаторе Mindbox (например
 // "${item.Product.Name}"), встречается прямо внутри текстовых узлов
 // вперемешку с обычным текстом. Это код, а не человеческий текст:
@@ -281,22 +440,50 @@ function applyTypographyToPlainText(text: string, stats: TypografStats): string 
   return result;
 }
 
-export function applyTypography(text: string, stats: TypografStats): string {
-  if (!CYRILLIC_RE.test(text)) {
-    return text;
-  }
+function applyTypographyToPlainTextEn(text: string, stats: TypografStats): string {
+  let result = text;
+  result = applyQuotes(result, stats);
+  result = applyEnApostrophes(result, stats);
+  result = applyEnDash(result, stats);
+  result = applyEnAbbreviations(result, stats);
+  result = applyEnInitials(result, stats);
+  result = applyEnNumbers(result, stats);
+  result = applyEnShortWords(result, stats);
+  return result;
+}
+
+// Общая обёртка вокруг любого из двух "плоских" конвейеров выше — вырезает
+// ${...}-вставки перед обработкой и возвращает их на место без изменений
+// (см. комментарий у INTERPOLATION_RE): риск одинаковый что для русского,
+// что для английского текста (например, "${Order.Total > 100 or ...}" —
+// "or" внутри выражения не должно склеиваться неразрывным пробелом).
+function applyWithInterpolationGuard(
+  text: string,
+  stats: TypografStats,
+  processPlain: (segment: string, stats: TypografStats) => string,
+): string {
   if (!text.includes("${")) {
-    return applyTypographyToPlainText(text, stats);
+    return processPlain(text, stats);
   }
   let result = "";
   let lastIndex = 0;
   INTERPOLATION_RE.lastIndex = 0;
   let match: RegExpExecArray | null;
   while ((match = INTERPOLATION_RE.exec(text)) !== null) {
-    result += applyTypographyToPlainText(text.slice(lastIndex, match.index), stats);
+    result += processPlain(text.slice(lastIndex, match.index), stats);
     result += match[0];
     lastIndex = match.index + match[0].length;
   }
-  result += applyTypographyToPlainText(text.slice(lastIndex), stats);
+  result += processPlain(text.slice(lastIndex), stats);
   return result;
+}
+
+export function applyTypography(text: string, stats: TypografStats): string {
+  if (CYRILLIC_RE.test(text)) {
+    return applyWithInterpolationGuard(text, stats, applyTypographyToPlainText);
+  }
+  if (LATIN_RE.test(text)) {
+    return applyWithInterpolationGuard(text, stats, applyTypographyToPlainTextEn);
+  }
+  return text;
 }
