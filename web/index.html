@@ -14,6 +14,14 @@
      а не отдельный файл — тот же принцип самодостаточности, что и у
      всего web/index.html (открывается прямо по file://, без сервера). -->
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAzMiAzMiI+PHJlY3Qgd2lkdGg9IjMyIiBoZWlnaHQ9IjMyIiByeD0iNyIgZmlsbD0iIzIwMWYyNyIvPjxwYXRoIGQ9Ik05IDggTDQgMTYgTDkgMjQiIHN0cm9rZT0iI2VjOGZjNCIgc3Ryb2tlLXdpZHRoPSIzIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiIGZpbGw9Im5vbmUiLz48cGF0aCBkPSJNMjMgOCBMMjggMTYgTDIzIDI0IiBzdHJva2U9IiNlYzhmYzQiIHN0cm9rZS13aWR0aD0iMyIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIiBmaWxsPSJub25lIi8+PHBhdGggZD0iTTEyLjUgMTcgTDE1IDIwIEwyMC41IDEyLjUiIHN0cm9rZT0iIzZiZGI5ZSIgc3Ryb2tlLXdpZHRoPSIzIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiIGZpbGw9Im5vbmUiLz48L3N2Zz4K">
+<!-- Анонимная аналитика посещений (GoatCounter) — без cookie и без
+     хранения полного IP/персональных данных, поэтому баннер согласия не
+     нужен (см. https://www.goatcounter.com/help/events). На file://
+     (открытие двойным кликом без сервера) скрипт просто не загрузится —
+     остальной странице это не мешает. Клики по ключевым кнопкам
+     отправляются отдельно как события — см. js/analytics.js. -->
+<script data-goatcounter="https://vmakarovdev.goatcounter.com/count"
+        async src="//gc.zgo.at/count.js"></script>
 <style>
   :root {
     /* Пастельно-графитовая тёмная тема: не чёрный, а тёмно-серый с лёгким
@@ -1201,5 +1209,6 @@
 <script src="js/render-output.js"></script>
 <script src="js/format-actions.js"></script>
 <script src="js/compress.js"></script>
+<script src="js/analytics.js"></script>
 </body>
 </html>
