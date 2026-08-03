@@ -66,7 +66,7 @@ export function applyServiceCleanup(nodes: Node[], stats: ServiceCleanupStats): 
         result.push(...node.children);
         continue;
       }
-    } else if (node.type === "conditional-comment") {
+    } else if (node.type === "conditional-comment" || node.type === "mindbox-block") {
       node.children = applyServiceCleanup(node.children, stats);
     } else if (node.type === "raw-text" || node.type === "style") {
       stripEsdTextClass(node, stats);

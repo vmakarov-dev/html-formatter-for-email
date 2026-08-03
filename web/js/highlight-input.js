@@ -131,6 +131,14 @@
         if (!node.explicitlyClosed) return open + inner;
         return open + inner + plainCloseTag(node.tagName);
       }
+      case "mindbox-statement":
+      case "stray-mindbox-end":
+        return escapeHtml(node.raw);
+      case "mindbox-block": {
+        const inner = node.children.map(plainNode).join("");
+        if (!node.explicitlyClosed) return escapeHtml(node.openRaw) + inner;
+        return escapeHtml(node.openRaw) + inner + escapeHtml(node.closeRaw);
+      }
       default:
         return "";
     }
@@ -168,6 +176,15 @@
         const inner = node.children.map(highlightNode).join("");
         if (!node.explicitlyClosed) return open + inner;
         return open + inner + highlightCloseTag(node.tagName);
+      }
+      case "mindbox-statement":
+      case "stray-mindbox-end":
+        return `<span class="tok-mindbox">${escapeHtml(node.raw)}</span>`;
+      case "mindbox-block": {
+        const open = `<span class="tok-mindbox">${escapeHtml(node.openRaw)}</span>`;
+        const inner = node.children.map(highlightNode).join("");
+        if (!node.explicitlyClosed) return open + inner;
+        return open + inner + `<span class="tok-mindbox">${escapeHtml(node.closeRaw)}</span>`;
       }
       default:
         return "";

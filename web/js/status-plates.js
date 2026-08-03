@@ -43,6 +43,24 @@
     const mod100 = n % 100;
     return mod10 === 1 && mod100 !== 11 ? "лишний" : "лишних";
   }
+  // Согласование числительного со словом "конструкция" (1 конструкция,
+  // 2 конструкции, 5 конструкций, ...) — для незакрытых @{for ...}/
+  // @{if ...} (см. isMindboxConstruct в diagnostics-view.js), отдельно от
+  // pluralizeTag/unclosedAdjective выше: "конструкция" — существительное
+  // женского рода, склоняется иначе, чем "тег".
+  function pluralizeConstruct(n) {
+    const mod10 = n % 10;
+    const mod100 = n % 100;
+    if (mod100 >= 11 && mod100 <= 14) return "конструкций";
+    if (mod10 === 1) return "конструкция";
+    if (mod10 >= 2 && mod10 <= 4) return "конструкции";
+    return "конструкций";
+  }
+  function unclosedConstructAdjective(n) {
+    const mod10 = n % 10;
+    const mod100 = n % 100;
+    return mod10 === 1 && mod100 !== 11 ? "незакрытая" : "незакрытых";
+  }
 
   // Сводка справа от заголовка "Результат": сколько тегов сейчас реально
   // помечены красным флажком (workingTags.length — уменьшается и при
@@ -71,7 +89,18 @@
       return;
     }
     const openCount = workingTags.length;
-    const unclosedCount = workingTags.filter((e) => e.kind === "unclosed").length;
+    // unclosed делится на две грамматически разные подкатегории — обычные
+    // HTML-теги ("N незакрытых тегов") и Mindbox-конструкции @{for ...}/
+    // @{if ...} ("N незакрытых конструкций", см. isMindboxConstruct) —
+    // само число проблемных мест (workingTags.length) и вся механика
+    // принятия/отклонения при этом не меняются вовсе, различается только
+    // формулировка сводки.
+    const unclosedTagCount = workingTags.filter(
+      (e) => e.kind === "unclosed" && !isMindboxConstruct(e.tagName),
+    ).length;
+    const unclosedConstructCount = workingTags.filter(
+      (e) => e.kind === "unclosed" && isMindboxConstruct(e.tagName),
+    ).length;
     // Спаренный "неоткрытый" (kind==="unopened" с pairId) — это то же
     // самое, что и его пара в "лишних" (см. checkUnopenedChild/pairId в
     // src/formatter.ts): одна и та же строка-подсказка "Добавить?" всё
@@ -88,8 +117,13 @@
     let cls;
     if (openCount > 0) {
       const clauses = [];
-      if (unclosedCount > 0) {
-        clauses.push(`${unclosedCount} ${unclosedAdjective(unclosedCount)} ${pluralizeTag(unclosedCount)}`);
+      if (unclosedTagCount > 0) {
+        clauses.push(`${unclosedTagCount} ${unclosedAdjective(unclosedTagCount)} ${pluralizeTag(unclosedTagCount)}`);
+      }
+      if (unclosedConstructCount > 0) {
+        clauses.push(
+          `${unclosedConstructCount} ${unclosedConstructAdjective(unclosedConstructCount)} ${pluralizeConstruct(unclosedConstructCount)}`,
+        );
       }
       if (unopenedCount > 0) {
         clauses.push(`${unopenedCount} ${unopenedAdjective(unopenedCount)} ${pluralizeTag(unopenedCount)}`);
@@ -135,7 +169,8 @@
     list.className = "empty-attrs-list";
     for (const [tagName, rows] of byTag) {
       const li = document.createElement("li");
-      li.appendChild(document.createTextNode(`<${tagName}>: `));
+      const label = isMindboxConstruct(tagName) ? mindboxOpenLabel(tagName) : `<${tagName}>`;
+      li.appendChild(document.createTextNode(`${label}: `));
       rows.forEach((row, i) => {
         if (i > 0) li.appendChild(document.createTextNode(", "));
         const link = document.createElement("span");

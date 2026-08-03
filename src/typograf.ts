@@ -223,30 +223,54 @@ function applyDash(text: string, stats: TypografStats): string {
     });
 }
 
-// Прямые/типографские двойные кавычки -> «ёлочки». Пары чередуются
-// строго по порядку появления (открытие/закрытие) — см. известное
-// упрощение про вложенность в комментарии выше.
+// Прямые/типографские двойные кавычки -> «ёлочки» — но если содержимое
+// САМОЙ пары кавычек не содержит ни одной кириллической буквы (то есть
+// это вставка английского текста внутри русского предложения, например
+// Он сказал "hello" мне), по правилам русской типографики вокруг такой
+// иноязычной вставки положены "лапки" (обычные типографские двойные
+// кавычки), а не «ёлочки». Пары по-прежнему чередуются строго по порядку
+// появления (открытие/закрытие) — см. известное упрощение про
+// вложенность в комментарии выше; стиль конкретной пары выбирается уже
+// ПОСЛЕ того, как пара найдена, по её содержимому.
 function applyQuotes(text: string, stats: TypografStats): string {
-  let result = "";
-  let open = true;
-  for (const ch of text) {
+  const positions: number[] = [];
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
     if (ch === '"' || ch === "“" || ch === "”" || ch === "„") {
-      result += open ? "«" : "»";
-      // Закрывающая кавычка — конец пары, считаем её один раз здесь, а
-      // не по каждому из двух символов пары.
-      if (!open) stats.quotes++;
-      open = !open;
-    } else {
-      result += ch;
+      positions.push(i);
     }
+  }
+  if (positions.length === 0) return text;
+
+  const replacement = new Map<number, string>();
+  for (let p = 0; p + 1 < positions.length; p += 2) {
+    const openIdx = positions[p];
+    const closeIdx = positions[p + 1];
+    const isForeign = !CYRILLIC_RE.test(text.slice(openIdx + 1, closeIdx));
+    replacement.set(openIdx, isForeign ? "“" : "«");
+    replacement.set(closeIdx, isForeign ? "”" : "»");
+    stats.quotes++;
+  }
+
+  let result = "";
+  for (let i = 0; i < text.length; i++) {
+    // Непарная кавычка (нечётный "хвост" без закрытия) в replacement не
+    // попадает — оставляем как есть, менять её не на что.
+    result += replacement.get(i) ?? text[i];
   }
   return result;
 }
 
-export function applyTypography(text: string, stats: TypografStats): string {
-  if (!CYRILLIC_RE.test(text)) {
-    return text;
-  }
+// ${...} — инлайн-подстановка значения в шаблонизаторе Mindbox (например
+// "${item.Product.Name}"), встречается прямо внутри текстовых узлов
+// вперемешку с обычным текстом. Это код, а не человеческий текст:
+// кавычки/дефисы/пробелы внутри выражения не должны превращаться в
+// «ёлочки»/тире/неразрывные пробелы — см. согласованные правила
+// форматирования Mindbox-конструкций. Поэтому такие участки вырезаются
+// перед обработкой и возвращаются на место без изменений.
+const INTERPOLATION_RE = /\$\{[^}]*\}/g;
+
+function applyTypographyToPlainText(text: string, stats: TypografStats): string {
   let result = text;
   result = applyQuotes(result, stats);
   result = applyDash(result, stats);
@@ -254,5 +278,25 @@ export function applyTypography(text: string, stats: TypografStats): string {
   result = applyInitials(result, stats);
   result = applyNumbers(result, stats);
   result = applyPrepositionsAndParticles(result, stats);
+  return result;
+}
+
+export function applyTypography(text: string, stats: TypografStats): string {
+  if (!CYRILLIC_RE.test(text)) {
+    return text;
+  }
+  if (!text.includes("${")) {
+    return applyTypographyToPlainText(text, stats);
+  }
+  let result = "";
+  let lastIndex = 0;
+  INTERPOLATION_RE.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = INTERPOLATION_RE.exec(text)) !== null) {
+    result += applyTypographyToPlainText(text.slice(lastIndex, match.index), stats);
+    result += match[0];
+    lastIndex = match.index + match[0].length;
+  }
+  result += applyTypographyToPlainText(text.slice(lastIndex), stats);
   return result;
 }

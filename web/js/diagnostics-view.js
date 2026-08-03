@@ -1,3 +1,23 @@
+  // Renderer (src/formatter.ts) хранит незакрытые Mindbox-конструкции
+  // @{for ...}/@{if ...} в той же leak-механике, что и незакрытые
+  // HTML-теги (см. UnclosedTagInfo), но под "именами" "@for"/"@if" —
+  // префикс "@" невозможен в имени настоящего HTML-тега, поэтому это
+  // безопасный сигнал "это не тег, а конструкция шаблонизатора" для
+  // всего UI ниже (buildDisplayHtml/flagTitle/popups.js/popup-actions.js/
+  // status-plates.js). mindboxOpenLabel/mindboxCloseLabel восстанавливают
+  // из этого имени короткую подпись конструкции для текста подсказок —
+  // без самого выражения (аналогично тому, как и обычные HTML-подсказки
+  // показывают голое "<div>", без атрибутов).
+  function isMindboxConstruct(tagName) {
+    return typeof tagName === "string" && tagName.charAt(0) === "@";
+  }
+  function mindboxOpenLabel(tagName) {
+    return `@{${tagName.slice(1)}}`;
+  }
+  function mindboxCloseLabel(tagName) {
+    return `@{end ${tagName.slice(1)}}`;
+  }
+
   // Строит отображаемый HTML для #output: подсвеченный результат
   // (highlightHtml) плюс вставленные "строки-подсказки" с предполагаемым
   // закрывающим тегом для каждого элемента из workingTags — серым
@@ -78,7 +98,12 @@
       while (insIdx < insertions.length && insertions[insIdx].insertBeforeLine === orig) {
         const u = insertions[insIdx];
         const indent = "  ".repeat(u.depth);
-        const tagText = u.kind === "unopened" ? "<" + u.tagName + ">" : "</" + u.tagName + ">";
+        const tagText =
+          u.kind === "unopened"
+            ? "<" + u.tagName + ">"
+            : isMindboxConstruct(u.tagName)
+              ? mindboxCloseLabel(u.tagName)
+              : "</" + u.tagName + ">";
         resultLines.push(
           `<span class="suggested-line">${escapeHtml(indent)}` +
             `<span class="suggested-tag" data-uid="${u.__uid}">${escapeHtml(tagText)}</span></span>`,
@@ -194,6 +219,11 @@
     }
     if (kind === "extra") {
       return `Похоже, этот тег лишний — нет пары <${tagName}>`;
+    }
+    if (isMindboxConstruct(tagName)) {
+      return role === "open"
+        ? `Конструкция ${mindboxOpenLabel(tagName)} может быть не закрыта`
+        : `Вероятно, здесь пропущена конструкция ${mindboxCloseLabel(tagName)}`;
     }
     return role === "open" ? `Тег <${tagName}> может быть не закрыт` : "Вероятно, здесь пропущен тег";
   }

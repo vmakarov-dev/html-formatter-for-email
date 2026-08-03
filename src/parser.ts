@@ -4,8 +4,11 @@ import {
   Document,
   DoctypeNode,
   ElementNode,
+  MindboxBlockNode,
+  MindboxStatementNode,
   Node,
   RawTextElementNode,
+  StrayMindboxEndNode,
   StyleElementNode,
   TextNode,
 } from "./types.js";
@@ -118,6 +121,21 @@ const IMPLICIT_CLOSE_ON_SIBLING: Record<string, Set<string>> = {
 // matchesAncestorClose её нужно исключать отдельно, своим набором.
 const AMBIGUOUS_ANCESTOR_NAMES = new Set([...Object.keys(IMPLICIT_CLOSE_ON_SIBLING), "table"]);
 
+// Ключевые слова конструкций шаблонизатора Mindbox внутри "@{...}" —
+// см. MindboxBlockNode/MindboxStatementNode/StrayMindboxEndNode в
+// types.ts и правила форматирования, согласованные с пользователем.
+// "for"/"if" открывают блок (парную "end for"/"end if" ищем как
+// обычный stopTag); "set"/"else"/"elseif" — самостоятельная строка без
+// пары и без влияния на отступ.
+const MINDBOX_END_RE = /^end\s+(for|if)\b/i;
+const MINDBOX_OPEN_RE = /^(for|if)\b/i;
+const MINDBOX_STATEMENT_RE = /^(set|else|elseif)\b/i;
+
+type MindboxToken =
+  | { kind: "open"; construct: "for" | "if"; raw: string; end: number }
+  | { kind: "end"; construct: "for" | "if"; raw: string; end: number }
+  | { kind: "statement"; raw: string; end: number };
+
 class Parser {
   private src: string;
   private pos = 0;
@@ -166,7 +184,15 @@ class Parser {
   // stopAt: абсолютная позиция в исходнике, дойдя до которой парсинг
   // останавливается (используется, когда конец заранее найден заранее
   // через поиск по регулярному выражению, а не пошаговым сканированием).
-  private parseNodes(stopTag?: string, stopMarker?: string, stopAt?: number): Node[] {
+  // stopMindboxEnd: "for"/"if" — при встрече парной "@{end for}"/
+  // "@{end if}" парсинг текущего уровня останавливается (не потребляя
+  // её), см. parseMindboxBlock.
+  private parseNodes(
+    stopTag?: string,
+    stopMarker?: string,
+    stopAt?: number,
+    stopMindboxEnd?: "for" | "if",
+  ): Node[] {
     const nodes: Node[] = [];
     let textStart = -1;
 
@@ -201,6 +227,10 @@ class Parser {
       }
 
       if (stopTag && this.matchesImplicitClose(stopTag, this.pos)) {
+        break;
+      }
+
+      if (stopMindboxEnd && this.matchesMindboxEnd(stopMindboxEnd, this.pos)) {
         break;
       }
 
@@ -279,6 +309,35 @@ class Parser {
         }
       }
 
+      if (ch === "@" && this.src[this.pos + 1] === "{") {
+        const token = this.parseMindboxToken(this.pos);
+        if (token) {
+          flushText();
+          if (token.kind === "open") {
+            this.pos = token.end;
+            nodes.push(this.parseMindboxBlock(token.construct, token.raw));
+            continue;
+          }
+          if (token.kind === "end") {
+            this.pos = token.end;
+            const strayNode: StrayMindboxEndNode = {
+              type: "stray-mindbox-end",
+              raw: token.raw,
+              kind: token.construct,
+            };
+            nodes.push(strayNode);
+            continue;
+          }
+          this.pos = token.end;
+          const statementNode: MindboxStatementNode = { type: "mindbox-statement", raw: token.raw };
+          nodes.push(statementNode);
+          continue;
+        }
+        // Не распознали конструкцию (незакрытая "@{" либо неизвестное
+        // ключевое слово) — "@" остаётся обычным текстовым символом,
+        // падаем в обычное накопление текста ниже.
+      }
+
       if (textStart === -1) textStart = this.pos;
       this.pos++;
     }
@@ -345,6 +404,94 @@ class Parser {
       if (this.matchesClosingTag(name, pos)) return true;
     }
     return false;
+  }
+
+  // Находит позицию закрывающей "}" конструкции "@{...}", начинающейся в
+  // pos (pos указывает на "@"). Кавычки внутри выражения (например,
+  // строковый литерал сегмента "Test") пропускаются целиком, тем же
+  // принципом, что и normalizeAttrsWhitespace — на случай, если внутри
+  // литерала когда-нибудь встретится "}". Возвращает null, если "}" не
+  // нашлась до конца исходника (незакрытая/битая конструкция — в этом
+  // случае "@" остаётся обычным текстовым символом, см. вызывающую сторону).
+  private findMindboxConstructEnd(pos: number): number | null {
+    let i = pos + 2; // пропускаем "@{"
+    let inSingle = false;
+    let inDouble = false;
+    while (i < this.src.length) {
+      const c = this.src[i];
+      if (inSingle) {
+        if (c === "'") inSingle = false;
+        i++;
+        continue;
+      }
+      if (inDouble) {
+        if (c === '"') inDouble = false;
+        i++;
+        continue;
+      }
+      if (c === "'") {
+        inSingle = true;
+        i++;
+        continue;
+      }
+      if (c === '"') {
+        inDouble = true;
+        i++;
+        continue;
+      }
+      if (c === "}") return i;
+      i++;
+    }
+    return null;
+  }
+
+  // Разбирает конструкцию "@{...}" в позиции pos (чистый lookahead — не
+  // трогает this.pos). null — это не "@{", распознаваемая конструкция
+  // (незакрытая скобка либо неизвестное ключевое слово), тогда "@"
+  // остаётся обычным текстовым символом (см. вызов в parseNodes) — на
+  // случай синтаксиса Mindbox, который правила пока не описывают.
+  private parseMindboxToken(pos: number): MindboxToken | null {
+    if (this.src[pos] !== "@" || this.src[pos + 1] !== "{") return null;
+    const closeIdx = this.findMindboxConstructEnd(pos);
+    if (closeIdx === null) return null;
+    const inner = this.src.slice(pos + 2, closeIdx).trim();
+    const raw = this.src.slice(pos, closeIdx + 1);
+    const end = closeIdx + 1;
+    const endMatch = MINDBOX_END_RE.exec(inner);
+    if (endMatch) {
+      return { kind: "end", construct: endMatch[1].toLowerCase() as "for" | "if", raw, end };
+    }
+    const openMatch = MINDBOX_OPEN_RE.exec(inner);
+    if (openMatch) {
+      return { kind: "open", construct: openMatch[1].toLowerCase() as "for" | "if", raw, end };
+    }
+    if (MINDBOX_STATEMENT_RE.test(inner)) {
+      return { kind: "statement", raw, end };
+    }
+    return null;
+  }
+
+  private matchesMindboxEnd(construct: "for" | "if", pos: number): boolean {
+    const token = this.parseMindboxToken(pos);
+    return token !== null && token.kind === "end" && token.construct === construct;
+  }
+
+  // this.pos должен указывать сразу ПОСЛЕ открывающей "@{for ...}"/
+  // "@{if ...}" (см. вызов в parseNodes). Ищет парную "@{end for}"/
+  // "@{end if}" тем же принципом, что parseElement ищет закрывающий
+  // HTML-тег: если её нет — конструкция остаётся explicitlyClosed=false,
+  // и её отступ "утекает" дальше по документу через leak-стек в
+  // Renderer (formatter.ts), как у незакрытого HTML-тега.
+  private parseMindboxBlock(construct: "for" | "if", openRaw: string): MindboxBlockNode {
+    const children = this.parseNodes(undefined, undefined, undefined, construct);
+    const token = this.parseMindboxToken(this.pos);
+    const explicitlyClosed = token !== null && token.kind === "end" && token.construct === construct;
+    let closeRaw = "";
+    if (explicitlyClosed && token) {
+      closeRaw = token.raw;
+      this.pos = token.end;
+    }
+    return { type: "mindbox-block", kind: construct, openRaw, closeRaw, explicitlyClosed, children };
   }
 
   private consumeClosingTag(): void {

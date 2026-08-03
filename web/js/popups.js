@@ -171,16 +171,24 @@
       acceptBtn.textContent = "✓";
       if (isDelete) {
         // extra — реальный ЗАКРЫВАЮЩИЙ тег (осиротевший), unclosed на
-        // открывающей стороне — реальный ОТКРЫВАЮЩИЙ; удаляем именно ту
-        // строку, на которой стоим.
-        const tagText = u.kind === "extra" ? `</${u.tagName}>` : `<${u.tagName}>`;
+        // открывающей стороне — реальный ОТКРЫВАЮЩИЙ (либо, для Mindbox,
+        // реально открывшаяся @{for ...}/@{if ...}, см. isMindboxConstruct
+        // в diagnostics-view.js); удаляем именно ту строку, на которой стоим.
+        const tagText =
+          u.kind === "extra"
+            ? `</${u.tagName}>`
+            : isMindboxConstruct(u.tagName)
+              ? mindboxOpenLabel(u.tagName)
+              : `<${u.tagName}>`;
         acceptBtn.title = `Удалить ${tagText} из результата`;
         acceptBtn.addEventListener("click", () => acceptDeletion(u));
       } else {
         acceptBtn.title =
           u.kind === "unopened"
             ? `Добавить <${u.tagName}> в результат`
-            : `Добавить </${u.tagName}> в результат`;
+            : isMindboxConstruct(u.tagName)
+              ? `Добавить ${mindboxCloseLabel(u.tagName)} в результат`
+              : `Добавить </${u.tagName}> в результат`;
         acceptBtn.addEventListener("click", () => acceptSuggestion(u));
       }
       main.appendChild(acceptBtn);

@@ -10,7 +10,10 @@ export type Node =
   | TextNode
   | CommentNode
   | ConditionalCommentNode
-  | StrayCloseTagNode;
+  | StrayCloseTagNode
+  | MindboxBlockNode
+  | MindboxStatementNode
+  | StrayMindboxEndNode;
 
 export interface DoctypeNode {
   type: "doctype";
@@ -86,6 +89,42 @@ export interface StrayCloseTagNode {
   type: "stray-close-tag";
   raw: string; // например "</td>", как в исходнике
   tagName: string; // "td" — для поиска совпадения среди незакрытых тегов
+}
+
+// Блочная конструкция шаблонизатора Mindbox: @{for ...}/@{end for} или
+// @{if ...}/@{end if}. Участвует в иерархии наравне с условными
+// комментариями и обычными тегами: открывающая часть — как открывающий
+// тег, содержимое между ней и парной @{end ...} — настоящие дочерние
+// узлы (свободно вперемешку с обычной HTML-разметкой).
+export interface MindboxBlockNode {
+  type: "mindbox-block";
+  kind: "for" | "if";
+  openRaw: string; // например "@{for item in Order.Items}", как в исходнике
+  closeRaw: string; // например "@{end for}"; пусто, если explicitlyClosed=false
+  // Была ли в исходнике настоящая парная @{end for}/@{end if} — та же
+  // роль, что и у ElementNode.explicitlyClosed: если пары нет, отступ
+  // "утекает" дальше по документу через тот же leak-стек, что и у
+  // незакрытых HTML-тегов (см. Renderer в formatter.ts), а закрывающую
+  // конструкцию форматтер не сочиняет.
+  explicitlyClosed: boolean;
+  children: Node[];
+}
+
+// Самостоятельная инструкция Mindbox без пары: @{set ...} или
+// @{else}/@{elseif ...}. Всегда своя строка на текущем уровне отступа —
+// не открывает и не закрывает вложенность (аналог самозакрывающегося
+// тега).
+export interface MindboxStatementNode {
+  type: "mindbox-statement";
+  raw: string; // например "@{set counter = counter + 1}", как в исходнике
+}
+
+// "Ничья" @{end for}/@{end if} без соответствующей открывающей
+// конструкции в этой области — зеркало StrayCloseTagNode для Mindbox.
+export interface StrayMindboxEndNode {
+  type: "stray-mindbox-end";
+  raw: string; // например "@{end for}", как в исходнике
+  kind: "for" | "if";
 }
 
 export interface Document {

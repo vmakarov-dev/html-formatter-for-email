@@ -8,6 +8,16 @@ import { ElementNode, Node } from "./types.js";
 
 const INDENT_UNIT = "  ";
 
+// "Имя тега" для записи в leak-стеке, соответствующей незакрытой
+// Mindbox-конструкции @{for ...}/@{if ...} (см. case "mindbox-block" в
+// Renderer.renderBlockNode и case "stray-mindbox-end") — префикс "@"
+// невозможен в имени настоящего HTML-тега, поэтому такая запись никогда
+// случайно не совпадёт с обычным незакрытым тегом при поиске пары в
+// resolveStrayClose.
+function mindboxLeakLabel(kind: "for" | "if"): string {
+  return `@${kind}`;
+}
+
 // Атрибуты, у которых пустое значение (attr="") почти всегда ошибка, а
 // не осознанный выбор — в отличие, например, от alt="" (легитимный
 // приём для декоративных картинок, специально исключён). background —
@@ -246,6 +256,15 @@ function serializeCompact(node: Node): string {
     }
     case "stray-close-tag":
       return node.raw;
+    case "mindbox-statement":
+      return node.raw.replace(/\s+/g, " ");
+    case "stray-mindbox-end":
+      return node.raw;
+    case "mindbox-block": {
+      const inner = collapseFlowWhitespace(node.children.map(serializeCompact).join(""));
+      const middle = inner.length > 0 ? ` ${inner} ` : "";
+      return node.explicitlyClosed ? `${node.openRaw}${middle}${node.closeRaw}` : `${node.openRaw}${middle}`;
+    }
   }
 }
 
@@ -583,7 +602,7 @@ class Renderer {
   // условный комментарий, см. вызовы в renderBlockNode).
   private checkEmptyAttrsDeep(node: Node): void {
     this.checkEmptyAttrsOwn(node);
-    if (node.type === "element" || node.type === "conditional-comment") {
+    if (node.type === "element" || node.type === "conditional-comment" || node.type === "mindbox-block") {
       for (const child of node.children) this.checkEmptyAttrsDeep(child);
     }
   }
@@ -818,6 +837,27 @@ class Renderer {
         return;
       }
 
+      case "mindbox-statement": {
+        // @{set ...} / @{else} / @{elseif ...} — самостоятельная строка,
+        // не открывающая и не закрывающая вложенность (см. типы в
+        // types.ts и согласованные правила форматирования).
+        this.pushLine(this.indent() + node.raw);
+        return;
+      }
+
+      case "stray-mindbox-end": {
+        // "Ничья" @{end for}/@{end if} — зеркало case "stray-close-tag"
+        // выше, только по отдельному пространству имён MINDBOX_LEAK_LABEL
+        // (чтобы никогда не совпасть по имени с настоящим HTML-тегом).
+        const label = mindboxLeakLabel(node.kind);
+        const resolved = this.resolveStrayClose(label, this.conditionalCommentDepth > 0);
+        if (resolved !== null) {
+          this.depth = resolved;
+        }
+        this.pushLine(this.indent() + node.raw);
+        return;
+      }
+
       case "conditional-comment": {
         if (this.options.collapseOutlookComments) {
           // Комментарий целиком (открывающая конструкция, содержимое и
@@ -904,6 +944,63 @@ class Renderer {
           this.pushLine(line.length > 0 ? this.indent(this.depth + 1) + line : "");
         }
         this.pushLine(this.indent() + `</${node.tagName}>`);
+        return;
+      }
+
+      case "mindbox-block": {
+        // @{for ...}/@{if ...} ... @{end for}/@{end if} — те же правила
+        // отступа и та же leak-механика, что у незакрытого HTML-тега
+        // (см. case "element" ниже, ровно тот же алгоритм, только запись
+        // в leak-стеке помечена MINDBOX_LEAK_LABEL, а не именем тега,
+        // чтобы не пересечься по имени с настоящими HTML-тегами и чтобы
+        // диагностика "незакрытый тег" отличала конструкцию от тега —
+        // см. mindboxLeakLabel/isMindboxLeakLabel).
+        const d = this.depth;
+        this.pushLine(this.indent(d) + node.openRaw);
+        const leakMark = this.leakStack.length;
+        let ownEntry: LeakEntry | null = null;
+        if (!node.explicitlyClosed) {
+          ownEntry = {
+            tagName: mindboxLeakLabel(node.kind),
+            popToDepth: d,
+            line: this.out.length - 1,
+            resolved: false,
+            insertBeforeLine: Infinity,
+            insertConfidence: "reliable",
+            parentEntry: this.currentUnclosedAncestor,
+            openedInConditionalComment: this.conditionalCommentDepth > 0,
+          };
+          this.leakStack.push(ownEntry);
+          this.allLeakEntries.push(ownEntry);
+        }
+        this.depth = d + 1;
+        if (node.children.length > 0) {
+          // currentParentTagName намеренно НЕ трогаем — конструкция не
+          // настоящий HTML-тег, реальным структурным родителем её
+          // содержимого остаётся ближайший настоящий тег снаружи (та же
+          // логика, что и у conditional-comment, см. комментарий там же).
+          if (ownEntry) {
+            const savedAncestor = this.currentUnclosedAncestor;
+            this.currentUnclosedAncestor = ownEntry;
+            this.renderNodes(node.children);
+            this.currentUnclosedAncestor = savedAncestor;
+          } else {
+            this.renderNodes(node.children);
+          }
+        }
+
+        if (node.explicitlyClosed) {
+          const prunedFrom = Math.min(leakMark, this.leakStack.length);
+          for (let k = prunedFrom; k < this.leakStack.length; k++) {
+            const pruned = this.leakStack[k];
+            if (pruned && pruned.insertBeforeLine === Infinity) {
+              pruned.insertBeforeLine = this.out.length;
+            }
+          }
+          this.leakStack.length = prunedFrom;
+          this.depth = d;
+          this.pushLine(this.indent(d) + node.closeRaw);
+        }
         return;
       }
 
@@ -1082,7 +1179,11 @@ function applyTypographyToTree(nodes: Node[], stats: TypografStats): void {
   for (const node of nodes) {
     if (node.type === "text") {
       node.value = applyTypography(node.value, stats);
-    } else if (node.type === "element" || node.type === "conditional-comment") {
+    } else if (
+      node.type === "element" ||
+      node.type === "conditional-comment" ||
+      node.type === "mindbox-block"
+    ) {
       applyTypographyToTree(node.children, stats);
     }
   }

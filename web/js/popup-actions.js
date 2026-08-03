@@ -8,6 +8,11 @@
   // реально есть в письме, мы её и нашли.
   function pairLabelFor(u, isOpenSide) {
     if (u.kind === "unclosed") {
+      if (isMindboxConstruct(u.tagName)) {
+        return isOpenSide
+          ? `Не найдена закрывающая конструкция ${mindboxCloseLabel(u.tagName)}: `
+          : `Найдена открывающая конструкция ${mindboxOpenLabel(u.tagName)}: `;
+      }
       return isOpenSide ? "Не найден закрывающий тег: " : "Найден открывающий тег: ";
     }
     if (u.kind === "unopened") return "Найден закрывающий тег: ";
@@ -99,7 +104,12 @@
 
   function acceptSuggestion(u) {
     const lines = lastCleanHtml.split("\n");
-    const tagText = u.kind === "unopened" ? "<" + u.tagName + ">" : "</" + u.tagName + ">";
+    const tagText =
+      u.kind === "unopened"
+        ? "<" + u.tagName + ">"
+        : isMindboxConstruct(u.tagName)
+          ? mindboxCloseLabel(u.tagName)
+          : "</" + u.tagName + ">";
     const text = "  ".repeat(u.depth) + tagText;
     lines.splice(u.insertBeforeLine, 0, text);
     lastCleanHtml = lines.join("\n");
