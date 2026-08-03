@@ -478,12 +478,26 @@ function applyWithInterpolationGuard(
   return result;
 }
 
+// Оба конвейера ловят слова только "своего" алфавита (русские regex'ы
+// собраны из кириллических литералов, английские — из латинских), поэтому
+// они не мешают друг другу и МОГУТ применяться к одному и тому же тексту
+// оба сразу — реальный случай: двуязычный узел вида "...or respect.
+// Ремарка... или уважение." (английское определение + русский перевод в
+// одном <span>). Раньше применялся только ОДИН конвейер целиком (по факту
+// "есть ли в узле кириллица ВООБЩЕ"), из-за чего английская часть такого
+// смешанного узла типографику не получала вовсе — "or" перед последним
+// словом не приклеивался неразрывным пробелом. applyQuotes вызывается в
+// обоих конвейерах — если сработают оба прохода, второй пройдёт по уже
+// обработанному тексту, где прямых кавычек больше нет, и ничего не
+// сделает (см. ранний выход в начале applyQuotes), повторного счёта не
+// будет.
 export function applyTypography(text: string, stats: TypografStats): string {
-  if (CYRILLIC_RE.test(text)) {
-    return applyWithInterpolationGuard(text, stats, applyTypographyToPlainText);
+  let result = text;
+  if (CYRILLIC_RE.test(result)) {
+    result = applyWithInterpolationGuard(result, stats, applyTypographyToPlainText);
   }
-  if (LATIN_RE.test(text)) {
-    return applyWithInterpolationGuard(text, stats, applyTypographyToPlainTextEn);
+  if (LATIN_RE.test(result)) {
+    result = applyWithInterpolationGuard(result, stats, applyTypographyToPlainTextEn);
   }
-  return text;
+  return result;
 }

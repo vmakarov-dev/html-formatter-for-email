@@ -429,6 +429,15 @@ test("типограф (английский): ${...}-вставки защищ�
   assert.equal(out, "<p>${Order.Total > 100 or Order.HasDiscount} plain text or&nbsp;more.</p>");
 });
 
+test("типограф: двуязычный узел (английское определение + русский перевод) — оба конвейера срабатывают в одном тексте", () => {
+  const input = `<p>Compliment is a remark that expresses approval, admiration, or respect. Ремарка, которая выражает одобрение, восхищение или уважение.</p>`;
+  const out = formatHtml(input);
+  assert.equal(
+    out,
+    "<p>Compliment is&nbsp;a&nbsp;remark that expresses approval, admiration, or&nbsp;respect. Ремарка, которая выражает одобрение, восхищение или&nbsp;уважение.</p>",
+  );
+});
+
 test("типограф: не трогает атрибуты, содержимое script/style и обычные комментарии", () => {
   const input =
     `<div title="привет - пока" data-x="в доме">` +
