@@ -372,6 +372,12 @@ test("типограф: частица 'не' не отрывается от с�
   assert.equal(out, "<p>Я&nbsp;не&nbsp;видел его вчера.</p>");
 });
 
+test("типограф: предлог 'от' не отрывается от следующего слова", () => {
+  const input = `<p>Видеоурок от носителей языка.</p>`;
+  const out = formatHtml(input);
+  assert.equal(out, "<p>Видеоурок от&nbsp;носителей языка.</p>");
+});
+
 test("типограф: typografy: false отключает преобразование текста", () => {
   const input = `<p>Он сказал "привет" А. С. Пушкину - и ушел в дом.</p>`;
   const out = formatHtml(input, { typografy: false });
