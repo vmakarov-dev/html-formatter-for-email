@@ -459,6 +459,42 @@ test("типограф: круглые скобки БЕЗ маркера $ — 
   assert.equal(out, "<p>Текст с&nbsp;пояснением (просто скобки&nbsp;— вот так) продолжается.</p>");
 });
 
+test("типограф: голый текст между двумя блочными тегами (реальный случай — условие стороннего шаблонизатора между двумя <table>) не трогается вовсе", () => {
+  const input = `<div><table><tr><td>a</td></tr></table>$(if [Field: Tier] == "BASIC" - test)<table><tr><td>b</td></tr></table></div>`;
+  const out = formatHtml(input);
+  assert.match(out, /\$\(if \[Field: Tier\] == "BASIC" - test\)/);
+});
+
+test("типограф: тот же голый текст между <table> — счётчики типографа его не учитывают вовсе", () => {
+  const input = `<div><table><tr><td>a</td></tr></table>Кириллица "проверка" - тест<table><tr><td>b</td></tr></table></div>`;
+  const { typografyItems } = formatHtmlWithDiagnostics(input);
+  assert.deepEqual(typografyItems, []);
+});
+
+test("типограф: текст — ЕДИНСТВЕННОЕ содержимое <p>/<span> (оба соседа отсутствуют) — не считается 'голым между блоками', типографика работает как обычно", () => {
+  const input = `<div>before</div><p>Он сказал "привет" - и ушел.</p><div>after</div>`;
+  const out = formatHtml(input);
+  assert.equal(
+    out,
+    ["<div>before</div>", '<p>Он сказал «привет»&nbsp;— и&nbsp;ушел.</p>', "<div>after</div>"].join("\n"),
+  );
+});
+
+test("типограф: текст рядом с инлайн-элементом (span) — не считается 'голым между блоками', даже если с другой стороны блочный тег", () => {
+  const input = `<div>before</div><span>Он сказал "привет" - и ушел.</span><div>after</div>`;
+  const out = formatHtml(input);
+  assert.equal(
+    out,
+    ["<div>before</div>", '<span>Он сказал «привет»&nbsp;— и&nbsp;ушел.</span>', "<div>after</div>"].join("\n"),
+  );
+});
+
+test("типограф: обычный текст — ЕДИНСТВЕННОЕ содержимое <td> — типографируется как раньше", () => {
+  const input = `<table><tr><td>Итого: "сумма" - 100 рублей</td></tr></table>`;
+  const out = formatHtml(input);
+  assert.match(out, /«сумма»&nbsp;— 100 рублей/);
+});
+
 test("типограф: двуязычный узел (английское определение + русский перевод) — оба конвейера срабатывают в одном тексте", () => {
   const input = `<p>Compliment is a remark that expresses approval, admiration, or respect. Ремарка, которая выражает одобрение, восхищение или уважение.</p>`;
   const out = formatHtml(input);

@@ -1102,16 +1102,66 @@ const DEFAULT_OPTIONS: ResolvedFormatOptions = {
   cleanServiceAttrs: true,
 };
 
+// true, если сосед (node) сам по себе — инлайн-элемент (span/a/b/em/...):
+// рядом с ним текст — обычный поток человеческого текста, что бы ни было
+// с ДРУГОЙ стороны. undefined (края у списка детей нет) инлайном не
+// считается — это "нейтральный" случай, см. applyTypographyToTree.
+function isInlineNeighbor(node: Node | undefined): boolean {
+  return node !== undefined && node.type === "element" && node.inline;
+}
+
+// true, если сосед — настоящий "блочный сигнал": то, что всегда стоит на
+// отдельной строке (любой НЕ-инлайн тег, комментарий, условный
+// комментарий, Mindbox-конструкция и т.п.). undefined (края нет) СЮДА НЕ
+// СЧИТАЕТСЯ намеренно — иначе текст, который является ЕДИНСТВЕННЫМ
+// содержимым обычного <p>/<span>/<td> (оба соседа отсутствуют), ошибочно
+// считался бы "голым между блоками" только потому, что у него нет
+// соседей вовсе — а такой текст почти всегда настоящий контент. Нужен
+// хотя бы ОДИН реальный блочный сосед, не просто отсутствие соседей.
+function isBlockNeighborSignal(node: Node | undefined): boolean {
+  if (!node) return false;
+  if (node.type === "element") return !node.inline;
+  if (node.type === "text") return false;
+  return true;
+}
+
 // Применяет типограф ко всем текстовым узлам дерева (мутирует их value
 // на месте — доc, полученный из parseHtml, создаётся заново на каждый
 // вызов formatHtml и никем больше не используется, так что мутация
 // безопасна). Теги/атрибуты/содержимое script,pre,style и обычные
 // комментарии не входят в число текстовых узлов вовсе, поэтому их
 // заведомо не трогаем — обходить их отдельно не нужно.
+//
+// Текстовый узел, "голый" между блочными тегами — реальный случай:
+// "$(if [Field: Tier] == "BASIC")" сидит прямо между двумя <table>
+// (закрывающим тегом одной и открывающим следующей), не внутри td/span/p
+// — в 99% случаев это НЕ настоящий контент, который увидит получатель
+// письма, а служебная разметка стороннего шаблонизатора, синтаксис
+// которого мы можем вообще не знать. Условие — ни с одной стороны нет
+// инлайн-элемента (см. isInlineNeighbor — иначе это обычный поток текста)
+// И хотя бы с одной стороны есть настоящий блочный сосед (см.
+// isBlockNeighborSignal — иначе это просто одинокий текст внутри
+// обычного контейнера, почти наверняка настоящий контент). В отличие от
+// защиты по $()/{}/[] (см. INTERPOLATION_RE в typograf.ts, действует по
+// СОДЕРЖИМОМУ независимо от позиции), это защита по ПОЗИЦИИ независимо
+// от содержимого — работает и для синтаксиса, который мы никогда не
+// видели, если он просто оказывается "голым" текстом между блочными
+// тегами. Согласовано с пользователем: осознанно допускаем редкий риск
+// пропустить настоящий, но неудачно свёрстанный голый текст без обёртки
+// — компромисс в пользу более широкого покрытия.
 function applyTypographyToTree(nodes: Node[], stats: TypografStats): void {
-  for (const node of nodes) {
+  for (let i = 0; i < nodes.length; i++) {
+    const node = nodes[i];
     if (node.type === "text") {
-      node.value = applyTypography(node.value, stats);
+      const prev = nodes[i - 1];
+      const next = nodes[i + 1];
+      const isBareBetweenBlocks =
+        !isInlineNeighbor(prev) &&
+        !isInlineNeighbor(next) &&
+        (isBlockNeighborSignal(prev) || isBlockNeighborSignal(next));
+      if (!isBareBetweenBlocks) {
+        node.value = applyTypography(node.value, stats);
+      }
     } else if (
       node.type === "element" ||
       node.type === "conditional-comment" ||
