@@ -25,8 +25,6 @@
       const {
         html,
         unclosedTags,
-        unopenedTags,
-        extraTags,
         emptyAttrsToFill,
         emptyAttrsToDelete,
         removedServiceItems,
@@ -41,38 +39,18 @@
       lastEmptyAttrsDelete = emptyAttrsToDelete;
       lastRemovedServiceItems = removedServiceItems;
       lastTypografyItems = typografyItems;
-      totalFlaggedCount = unclosedTags.length + unopenedTags.length + extraTags.length;
+      totalFlaggedCount = unclosedTags.length;
       // При выключенной опции просто не показываем ни одной подсказки —
       // сам formatHtmlWithDiagnostics всё равно считает диагностику (это
       // недорого), но веб-интерфейс полностью игнорирует результат: ни
-      // флажков, ни попапов, ни серых строк-подсказок.
-      //
-      // Все три вида диагностики сведены в один workingTags (различаются
-      // полем kind — см. buildDisplayHtml/makeFlag/acceptSuggestion) —
-      // это и есть то самое "включение в механику проверки незакрытых
-      // тегов", о котором просили: один чекбокс, один общий список
-      // флажков/попапов, только текст подсказки и (для unclosed/unopened)
-      // вставляемый тег разные. Для unopenedTags добавляем
-      // line = insertBeforeLine (у самого диагностируемого узла нет
-      // отдельной "своей" строки, в отличие от unclosed — см.
-      // checkUnopenedChild: там insertBeforeLine и есть строка первого
-      // "осиротевшего" ребёнка) и insertConfidence — "reliable" всегда,
-      // потому что неоднозначные случаи уже отфильтрованы на уровне
-      // leakStack в самом форматтере. pairId (см. UnopenedTagInfo/
-      // ExtraTagInfo в src/formatter.ts) переносим как есть — по нему
-      // acceptSuggestion/rejectSuggestion/acceptDeletion/rejectDeletion
-      // находят и снимают парную подсказку.
+      // флажков, ни попапов, ни серых строк-подсказок. kind:"unclosed" —
+      // единственный вид диагностики тегов: тег реально есть в исходнике
+      // (открывающий), просто не нашёл пары. Мы намеренно НЕ предлагаем
+      // вставить тег, которого в вёрстке вообще нет ни в каком виде
+      // (ни открывающего, ни закрывающего) — таких случаев слишком много
+      // тонкостей, это на усмотрение пользователя.
       workingTags = checkUnclosedTags.checked
-        ? [
-            ...unclosedTags.map((u) => Object.assign({ __uid: uidCounter++, kind: "unclosed" }, u)),
-            ...unopenedTags.map((u) =>
-              Object.assign(
-                { __uid: uidCounter++, kind: "unopened", line: u.insertBeforeLine, insertConfidence: "reliable" },
-                u,
-              ),
-            ),
-            ...extraTags.map((u) => Object.assign({ __uid: uidCounter++, kind: "extra" }, u)),
-          ]
+        ? unclosedTags.map((u) => Object.assign({ __uid: uidCounter++, kind: "unclosed" }, u))
         : [];
       renderOutput();
       if (scrollToBottom) {

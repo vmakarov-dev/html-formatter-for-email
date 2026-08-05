@@ -3,7 +3,6 @@ import { formatCss } from "./cssFormatter.js";
 import { isNeverCollapseElement } from "./htmlTags.js";
 import { applyTypography, TypografStats } from "./typograf.js";
 import { applyServiceCleanup, ServiceCleanupStats } from "./serviceCleanup.js";
-import { REQUIRED_PARENT } from "./unopenedTags.js";
 import { ElementNode, Node } from "./types.js";
 
 const INDENT_UNIT = "  ";
@@ -17,6 +16,25 @@ const INDENT_UNIT = "  ";
 function mindboxLeakLabel(kind: "for" | "if"): string {
   return `@${kind}`;
 }
+
+// Теги, у которых есть узкий, точно известный набор осмысленных
+// родителей — используется ТОЛЬКО как внутренний предохранитель в
+// resolveStrayClose (см. suspectedMissingParentCounts/checkMissingParentGuard
+// ниже), не как публичная диагностика: мы больше не предлагаем
+// пользователю вставить родительский тег, которого нет в исходнике вообще
+// ни в каком виде (ни открывающего, ни закрывающего) — слишком много
+// тонкостей, решение остаётся за пользователем. Но сам ФАКТ "структурно
+// непохоже, что у этого ребёнка правильный родитель" по-прежнему нужен
+// движку — без него "ничей" закрывающий тег в resolveStrayClose иногда
+// ошибочно утаскивает случайного одноимённого предка совсем из другого
+// места документа (см. checkMissingParentGuard).
+const REQUIRED_PARENT: Record<string, string[]> = {
+  td: ["tr"],
+  th: ["tr"],
+  dt: ["dl"],
+  dd: ["dl"],
+  tr: ["table", "tbody", "thead", "tfoot"],
+};
 
 // Атрибуты, у которых пустое значение (attr="") почти всегда ошибка, а
 // не осознанный выбор — в отличие, например, от alt="" (легитимный
@@ -356,54 +374,6 @@ export interface UnclosedTagInfo {
   insertConfidence: "reliable" | "uncertain";
 }
 
-// Зеркальная диагностика к UnclosedTagInfo: не "тег без пары", а "тег,
-// перед которым пропущен родитель" (например, <td>, чей единственный
-// осмысленный родитель — <tr>, но сейчас его реальный родитель в дереве
-// — <table>/<tbody>, потому что <tr> в исходнике вырезали). См.
-// checkUnopenedChild ниже и REQUIRED_PARENT в unopenedTags.ts — там же
-// объяснение, почему обнаружение устроено иначе, чем у незакрытых тегов.
-export interface UnopenedTagInfo {
-  tagName: string; // какого тега не хватает (например, "tr")
-  // 0-based номер строки, ПЕРЕД которой предположительно должен был бы
-  // стоять открывающий тег — та же строка, где сейчас печатается первый
-  // "потерявшийся" ребёнок серии (см. REQUIRED_PARENT).
-  insertBeforeLine: number;
-  // Уровень отступа для предполагаемого открывающего тега.
-  depth: number;
-  // Если дальше по документу нашёлся "ничей" закрывающий тег с тем же
-  // именем, который так и не сматчился ни с одним настоящим открытым
-  // предком (см. ExtraTagInfo и разбор пары в case "stray-close-tag"),
-  // это, скорее всего, ДВЕ стороны одной и той же правки — кто-то вырезал
-  // сам открывающий тег, а закрывающий по невнимательности оставил.
-  // pairId — общий идентификатор для UI: он же будет и у соответствующей
-  // записи в ExtraTagInfo, чтобы решение по одной из двух подсказок
-  // ("Добавить?"/"Удалить?") снимало и вторую тоже — они предлагают два
-  // взаимоисключающих способа починить один и тот же дефект. undefined —
-  // пары не нашлось, показываем только "Добавить?".
-  pairId?: number;
-}
-
-// Обратная сторона пары к UnopenedTagInfo (см. pairId там же) — "ничей"
-// закрывающий тег, СОВСЕМ не нашедший себе открывающего (ни настоящего в
-// this.leakStack, ни просто более раннего по документу, см.
-// resolveStrayClose), но при этом его имя совпадает с тегом, который
-// ГДЕ-ТО РАНЬШЕ уже был отмечен как "неоткрытый" (см. checkUnopenedChild
-// и pendingUnopenedByTag). Обе диагностики описывают одну и ту же
-// правку с двух сторон: можно либо вставить недостающий открывающий тег
-// (UnopenedTagInfo), либо убрать вот этот, оставшийся без пары,
-// закрывающий (этот интерфейс) — какой вариант ближе к тому, что
-// пользователь имел в виду на самом деле, решает он сам в UI.
-export interface ExtraTagInfo {
-  tagName: string;
-  // 0-based номер строки, где напечатан сам "лишний" закрывающий тег —
-  // в отличие от UnopenedTagInfo.insertBeforeLine (место для ВСТАВКИ
-  // нового текста), здесь это строка уже СУЩЕСТВУЮЩЕГО в выводе тега,
-  // которую предлагается удалить целиком.
-  line: number;
-  depth: number;
-  pairId: number;
-}
-
 // Диагностика "пустых атрибутов" (см. EMPTY_ATTR_NAMES/findEmptyAttrNames/
 // categorizeEmptyAttr выше) — сгруппирована ПО ИМЕНИ атрибута внутри
 // каждой из двух категорий (fill/delete, см. Renderer.getEmptyAttrsToFill/
@@ -465,18 +435,17 @@ class Renderer {
   // предок, для утечки глубины). Обновляется вокруг рекурсии в детей
   // ЛЮБОГО элемента (закрытого или нет), но НЕ вокруг условных
   // комментариев — они "прозрачны" для этой проверки (см.
-  // checkUnopenedChild): комментарий — не настоящий HTML-тег, реальным
-  // родителем его содержимого считается ближайший настоящий тег снаружи.
+  // checkMissingParentGuard): комментарий — не настоящий HTML-тег,
+  // реальным родителем его содержимого считается ближайший настоящий тег
+  // снаружи.
   private currentParentTagName: string | null = null;
-  private unopenedTags: UnopenedTagInfo[] = [];
-  private extraTags: ExtraTagInfo[] = [];
-  // Очередь ещё не сматченных UnopenedTagInfo-записей, по имени
-  // недостающего тега — FIFO (не LIFO, как this.leakStack): пропущенные
-  // открывающие теги логически паруются с ближайшим ПОСЛЕДУЮЩИМ "ничьим"
-  // закрывающим тегом того же имени в порядке появления по документу, а
-  // не как обычная вложенность (см. case "stray-close-tag").
-  private pendingUnopenedByTag = new Map<string, UnopenedTagInfo[]>();
-  private nextPairId = 1;
+  // Счётчик "подозрений" checkMissingParentGuard по имени тега — см. её
+  // же комментарий и REQUIRED_PARENT выше. Просто Map<имя, счётчик>, а не
+  // очередь объектов с insertBeforeLine/depth (как раньше у публичной
+  // диагностики UnopenedTagInfo): единственный потребитель —
+  // resolveStrayClose, которому нужен только факт "есть ли ещё
+  // непогашенное подозрение на этот тег", без деталей для UI.
+  private suspectedMissingParentCounts = new Map<string, number>();
   // См. EmptyAttrGroup/findEmptyAttrNames/categorizeEmptyAttr выше — ключ
   // Map сохраняет порядок первой вставки (гарантия спецификации), так
   // что getEmptyAttrsToFill/getEmptyAttrsToDelete отдают группы в
@@ -521,14 +490,6 @@ class Renderer {
       }));
   }
 
-  getUnopenedTags(): UnopenedTagInfo[] {
-    return this.unopenedTags;
-  }
-
-  getExtraTags(): ExtraTagInfo[] {
-    return this.extraTags;
-  }
-
   getEmptyAttrsToFill(): EmptyAttrGroup[] {
     return [...this.emptyAttrsFillByName.entries()].map(([attrName, lines]) => ({ attrName, lines }));
   }
@@ -542,9 +503,9 @@ class Renderer {
   }
 
   // ЕДИНСТВЕННЫЙ способ класть готовую строку в this.out — вся
-  // диагностика (номера строк в UnclosedTagInfo/UnopenedTagInfo/
-  // ExtraTagInfo/EmptyAttrGroup — это индексы this.out) держится на
-  // инварианте "один элемент this.out — ровно одна визуальная строка
+  // диагностика (номера строк в UnclosedTagInfo/EmptyAttrGroup — это
+  // индексы this.out) держится на инварианте "один элемент this.out —
+  // ровно одна визуальная строка
   // итогового вывода". Некоторые узлы сохраняют содержимое БЕЗ
   // изменений, "как есть" (обычные комментарии, raw-text/script/pre) —
   // включая любые переносы строк из самого исходника (например,
@@ -571,9 +532,8 @@ class Renderer {
 
   // Проверяет ТОЛЬКО собственные атрибуты узла (не детей) — вызывать для
   // каждого узла ровно там, где уже известно, что this.out.length —
-  // индекс строки, на которой вот-вот напечатается ЕГО открывающий тег
-  // (см. вызовы ниже: тот же принцип, что и у checkUnopenedChild). Детей
-  // такого узла эта функция не трогает — они либо получат свой
+  // индекс строки, на которой вот-вот напечатается ЕГО открывающий тег.
+  // Детей такого узла эта функция не трогает — они либо получат свой
   // собственный вызов через обычную рекурсию renderNodes (обычные
   // блочные потомки), либо их нужно обойти отдельно через
   // checkEmptyAttrsDeep (инлайн-поток, схлопнутый в одну строку, — там
@@ -607,35 +567,29 @@ class Renderer {
     }
   }
 
-  // Проверяет ОДНОГО ребёнка (см. REQUIRED_PARENT в unopenedTags.ts): не
-  // потерялся ли перед ним родитель. runTag передаётся по ссылке через
-  // возвращаемое значение — вызывающая сторона (renderNodes) хранит его
-  // как ЛОКАЛЬНУЮ переменную (не поле класса!), потому что серия
-  // однотипных пропусков считается только среди СОСЕДЕЙ одного и того же
-  // списка детей — рекурсия в детей текущего узла не должна влиять на
-  // серию, которую отслеживает вызывающий уровень, и наоборот.
+  // Внутренний предохранитель (НЕ публичная диагностика — см.
+  // REQUIRED_PARENT/suspectedMissingParentCounts выше): проверяет ОДНОГО
+  // ребёнка — не потерялся ли перед ним родитель. runTag передаётся по
+  // ссылке через возвращаемое значение — вызывающая сторона (renderNodes)
+  // хранит его как ЛОКАЛЬНУЮ переменную (не поле класса!), потому что
+  // серия однотипных пропусков считается только среди СОСЕДЕЙ одного и
+  // того же списка детей — рекурсия в детей текущего узла не должна
+  // влиять на серию, которую отслеживает вызывающий уровень, и наоборот.
   //
   // Если ближайший (самый глубокий, ещё не закрытый) "утёкший" тег в
-  // leakStack как раз входит в набор допустимых родителей — не флагуем:
-  // это почти наверняка приём вёрстки под Outlook, где <table><tr><td>
-  // намеренно разрублены на два условных комментария, и "неправильный"
-  // структурный родитель — просто следствие того, что реальный,
-  // допустимый родитель существует, просто не является ПРЯМЫМ
-  // узлом-предком в дереве (лежит в другом условном комментарии). Ложно
-  // принять эту легитимную конструкцию за баг было бы хуже, чем изредка
-  // пропустить настоящий.
+  // leakStack как раз входит в набор допустимых родителей — не считаем
+  // подозрительным: это почти наверняка приём вёрстки под Outlook, где
+  // <table><tr><td> намеренно разрублены на два условных комментария, и
+  // "неправильный" структурный родитель — просто следствие того, что
+  // реальный, допустимый родитель существует, просто не является ПРЯМЫМ
+  // узлом-предком в дереве (лежит в другом условном комментарии).
   //
   // Намеренно смотрим только на САМУЮ БЛИЖНЮЮ (последнюю в стеке) запись,
   // а не на весь leakStack целиком: более дальние предки — это просто
   // РЕАЛЬНЫЕ структурные предки текущего узла где-то выше по дереву (сам
   // факт, что где-то выше есть открытый <table>, не означает, что
-  // непосредственный родитель ЭТОГО узла — то же самое; например,
-  // отдельная вложенная MSO-обёртка может держать в стеке свой <table>,
-  // пока внутри нее совсем в другом месте у РЕАЛЬНОГО контента пропущен
-  // свой собственный, отдельный <table>). Проверка "есть ли где-то в
-  // стеке" ловила такие случаи как ложное совпадение и глушила настоящий
-  // баг.
-  private checkUnopenedChild(node: Node, runTag: string | null): string | null {
+  // непосредственный родитель ЭТОГО узла — то же самое).
+  private checkMissingParentGuard(node: Node, runTag: string | null): string | null {
     if (node.type !== "element") return null;
     const validParents = REQUIRED_PARENT[node.tagName.toLowerCase()];
     if (validParents === undefined) return null;
@@ -645,14 +599,10 @@ class Renderer {
     if (nearestLeak && validParents.includes(nearestLeak.tagName.toLowerCase())) return null;
     const required = validParents[0];
     if (runTag !== required) {
-      const entry: UnopenedTagInfo = { tagName: required, insertBeforeLine: this.out.length, depth: this.depth };
-      this.unopenedTags.push(entry);
-      const queue = this.pendingUnopenedByTag.get(required);
-      if (queue) {
-        queue.push(entry);
-      } else {
-        this.pendingUnopenedByTag.set(required, [entry]);
-      }
+      this.suspectedMissingParentCounts.set(
+        required,
+        (this.suspectedMissingParentCounts.get(required) ?? 0) + 1,
+      );
     }
     return required;
   }
@@ -681,7 +631,7 @@ class Renderer {
         continue;
       }
 
-      runTag = this.checkUnopenedChild(node, runTag);
+      runTag = this.checkMissingParentGuard(node, runTag);
       this.checkEmptyAttrsOwn(node);
       this.renderBlockNode(node);
       i++;
@@ -719,18 +669,22 @@ class Renderer {
       (e) => e.openedInConditionalComment === fromConditionalComment,
     );
     if (sameWorld !== null) return sameWorld;
-    // Если где-то раньше уже отметили пропущенного родителя с ТЕМ ЖЕ
-    // именем (см. checkUnopenedChild/pendingUnopenedByTag) — этот "ничей"
-    // закрывающий тег почти наверняка родная пара именно ЕМУ, а не
-    // случайному постороннему тегу с тем же именем, оставшемуся глубже в
-    // стеке. Не даём общему поиску "по всему стеку без разбора" утащить
-    // чужое совпадение — пусть тег останется по-настоящему ничьим, и его
-    // подхватит пара pendingUnopenedByTag/extraTags (см. case
-    // "stray-close-tag" ниже). Иначе, например, вырезанный <table> из-за
-    // этого фолбэка закрывал бы случайную ДАЛЁКУЮ вложенную таблицу
-    // где-то ещё в документе вместо того, чтобы честно предложить
-    // вставить пропущенный <table> ровно там, где он пропал.
-    if ((this.pendingUnopenedByTag.get(tagName.toLowerCase())?.length ?? 0) > 0) return null;
+    // Если где-то раньше уже заподозрили пропущенного родителя с ТЕМ ЖЕ
+    // именем (см. checkMissingParentGuard/suspectedMissingParentCounts) —
+    // этот "ничей" закрывающий тег почти наверняка родная пара именно
+    // ЕМУ, а не случайному постороннему тегу с тем же именем, оставшемуся
+    // глубже в стеке. Не даём общему поиску "по всему стеку без разбора"
+    // утащить чужое совпадение — пусть тег останется по-настоящему
+    // ничьим (просто печатается на текущей глубине, без диагностики).
+    // Иначе, например, вырезанный <table> из-за этого фолбэка закрывал бы
+    // случайную ДАЛЁКУЮ вложенную таблицу где-то ещё в документе вместо
+    // того, чтобы честно остаться на месте, где реально пропал.
+    const tagKey = tagName.toLowerCase();
+    const suspectedCount = this.suspectedMissingParentCounts.get(tagKey) ?? 0;
+    if (suspectedCount > 0) {
+      this.suspectedMissingParentCounts.set(tagKey, suspectedCount - 1);
+      return null;
+    }
     return this.findAndResolveStray(tagName, () => true);
   }
 
@@ -810,29 +764,12 @@ class Renderer {
         const resolved = this.resolveStrayClose(node.tagName, this.conditionalCommentDepth > 0);
         if (resolved !== null) {
           this.depth = resolved;
-        } else {
-          // Совсем "ничей" тег — не нашлось ни настоящего открытого
-          // предка, ни чужого совпадения. Если при этом где-то раньше
-          // уже отметили пропущенный открывающий тег с ТЕМ ЖЕ именем
-          // (см. checkUnopenedChild/pendingUnopenedByTag) — это, скорее
-          // всего, две стороны одной правки: свяжем их общим pairId (см.
-          // UnopenedTagInfo.pairId) для UI.
-          const queue = this.pendingUnopenedByTag.get(node.tagName.toLowerCase());
-          const paired = queue?.shift();
-          if (paired) {
-            const pairId = this.nextPairId++;
-            paired.pairId = pairId;
-            this.extraTags.push({
-              tagName: node.tagName,
-              line: this.out.length,
-              depth: this.depth,
-              pairId,
-            });
-          }
         }
-        // Печатаем уже на итоговом уровне: либо на глубине найденного
-        // открывающего тега (симметрично обычным закрывающим тегам),
-        // либо, если совпадения нет, на текущей глубине как есть.
+        // Совсем "ничей" тег (совпадения нет) печатается на текущей
+        // глубине как есть, без диагностики — форматтер не выдумывает,
+        // какой открывающий тег имелся в виду, это на усмотрение
+        // пользователя. Иначе — на глубине найденного открывающего тега,
+        // симметрично обычным закрывающим тегам.
         this.pushLine(this.indent() + node.raw);
         return;
       }
@@ -975,10 +912,6 @@ class Renderer {
         }
         this.depth = d + 1;
         if (node.children.length > 0) {
-          // currentParentTagName намеренно НЕ трогаем — конструкция не
-          // настоящий HTML-тег, реальным структурным родителем её
-          // содержимого остаётся ближайший настоящий тег снаружи (та же
-          // логика, что и у conditional-comment, см. комментарий там же).
           if (ownEntry) {
             const savedAncestor = this.currentUnclosedAncestor;
             this.currentUnclosedAncestor = ownEntry;
@@ -1074,8 +1007,8 @@ class Renderer {
         this.depth = d + 1;
         if (node.children.length > 0) {
           // currentParentTagName обновляем БЕЗУСЛОВНО (в отличие от
-          // currentUnclosedAncestor выше) — для проверки "неоткрытых"
-          // тегов важен РЕАЛЬНЫЙ структурный родитель в дереве, а он есть
+          // currentUnclosedAncestor выше) — для checkMissingParentGuard
+          // важен РЕАЛЬНЫЙ структурный родитель в дереве, а он есть
           // всегда, закрылся тег явно или нет.
           const savedParentTagName = this.currentParentTagName;
           this.currentParentTagName = node.tagName.toLowerCase();
@@ -1219,14 +1152,6 @@ export interface FormatResult {
   // закрывающего тега (ни обычного </tag>, ни "ничьего" — даже в другом
   // условном комментарии). Пустой массив — незакрытых тегов нет.
   unclosedTags: UnclosedTagInfo[];
-  // Теги, перед которыми похоже пропущен единственно возможный
-  // родитель (см. UnopenedTagInfo/checkUnopenedChild). Пустой массив —
-  // подозрений нет.
-  unopenedTags: UnopenedTagInfo[];
-  // "Ничьи" закрывающие теги, для которых нашлась пара среди unopenedTags
-  // (см. ExtraTagInfo). Пустой массив — либо таких вообще нет, либо ни
-  // один не удалось связать с записью в unopenedTags.
-  extraTags: ExtraTagInfo[];
   // Атрибуты из EMPTY_ATTR_NAMES, встреченные с пустым значением ("" или
   // ''), сгруппированные по имени — раздельно по категориям (см.
   // categorizeEmptyAttr): emptyAttrsToFill — самим не вывести значение,
@@ -1262,8 +1187,6 @@ export function formatHtmlWithDiagnostics(
   return {
     html,
     unclosedTags: renderer.getUnclosedTags(),
-    unopenedTags: renderer.getUnopenedTags(),
-    extraTags: renderer.getExtraTags(),
     emptyAttrsToFill: renderer.getEmptyAttrsToFill(),
     emptyAttrsToDelete: renderer.getEmptyAttrsToDelete(),
     removedServiceItems: serviceCleanupStatsToItems(serviceCleanupStats),

@@ -112,23 +112,17 @@
   // Координаты берутся напрямую из реальных координат уже
   // отрендеренного якоря в DOM (getBoundingClientRect) — надёжнее и
   // точнее, чем пересчитывать ширину отступа вручную по количеству
-  // символов. Для kind !== "extra" якорь — вставленная строка-подсказка
-  // (<span class="suggested-tag">, только при insertConfidence ===
-  // "reliable"); для kind === "extra" — обёрнутая существующая строка
-  // (<span class="extra-tag-anchor">, см. buildDisplayHtml). Само
-  // размещение попапов — отдельный изолированный блок выше
+  // символов. Якорь — вставленная строка-подсказка (<span
+  // class="suggested-tag">, только при insertConfidence === "reliable").
+  // Само размещение попапов — отдельный изолированный блок выше
   // (positionSuggestPopups), эта функция только создаёт их содержимое.
   //
-  // У kind==="unclosed" строится ДВА попапа на одну запись — один у
-  // подсказки (как обычно), второй — дубликат у самого места открытия
-  // тега (см. .unclosed-open-anchor/buildDisplayHtml): это единственный
-  // вид диагностики, где "место проблемы" и "место починки" могут
-  // оказаться далеко друг от друга по документу, и без дубликата на
-  // экране в принципе не увидеть попап рядом с красным флажком, если
-  // прокрутить именно к нему. У unopened/extra в этом нет нужды: у
-  // одиночного unopened оба места совпадают, а у пары unopened+extra
-  // каждая сторона — уже отдельная запись в workingTags и проходит этот
-  // цикл сама по себе, каждая со своим попапом.
+  // На каждую запись строится ДВА попапа — один у подсказки (как
+  // обычно), второй — дубликат у самого места открытия тега (см.
+  // .unclosed-open-anchor/buildDisplayHtml): "место проблемы" и "место
+  // починки" могут оказаться далеко друг от друга по документу, и без
+  // дубликата на экране в принципе не увидеть попап рядом с красным
+  // флажком, если прокрутить именно к нему.
   function renderPopups() {
     outputPopups.innerHTML = "";
     const wrapRect = output.parentElement.getBoundingClientRect();
@@ -136,15 +130,13 @@
     const entries = [];
 
     // mode — "delete" или "add", определяет и текст вопроса, и что делает
-    // ✓ (см. вызовы ниже): это не привязано жёстко к u.kind напрямую,
-    // потому что у unclosed вопрос зависит ещё и от ТОГО, на какой из
-    // двух её строк стоит именно этот попап (см. renderPopups ниже) —
-    // "Удалить?" там, где тег РЕАЛЬНО существует в письме (сам незакрытый
-    // открывающий, сам осиротевший закрывающий у extra), "Добавить?" там,
-    // где стоит только ПРЕДЛОЖЕННЫЙ, ещё не принятый тег (unopened,
-    // закрывающая половина unclosed) — его-то мы и добавили бы. Реальный
-    // тег можно только удалить, предложенного можно только добавить —
-    // никаких промежуточных вариантов.
+    // ✓ (см. вызовы ниже): зависит от того, на какой из двух строк записи
+    // стоит именно этот попап (см. renderPopups ниже) — "Удалить?" там,
+    // где тег РЕАЛЬНО существует в письме (сам незакрытый открывающий),
+    // "Добавить?" там, где стоит только ПРЕДЛОЖЕННЫЙ, ещё не принятый
+    // закрывающий тег — его-то мы и добавили бы. Реальный тег можно
+    // только удалить, предложенного можно только добавить — никаких
+    // промежуточных вариантов.
     function addPopup(u, tagEl, mode, pairRowOverride, isOpenSide) {
       if (!tagEl) return;
       const tagRect = tagEl.getBoundingClientRect();
@@ -170,25 +162,17 @@
       acceptBtn.type = "button";
       acceptBtn.textContent = "✓";
       if (isDelete) {
-        // extra — реальный ЗАКРЫВАЮЩИЙ тег (осиротевший), unclosed на
-        // открывающей стороне — реальный ОТКРЫВАЮЩИЙ (либо, для Mindbox,
-        // реально открывшаяся @{for ...}/@{if ...}, см. isMindboxConstruct
-        // в diagnostics-view.js); удаляем именно ту строку, на которой стоим.
-        const tagText =
-          u.kind === "extra"
-            ? `</${u.tagName}>`
-            : isMindboxConstruct(u.tagName)
-              ? mindboxOpenLabel(u.tagName)
-              : `<${u.tagName}>`;
+        // Открывающая сторона незакрытого тега — реальный ОТКРЫВАЮЩИЙ тег
+        // (либо, для Mindbox, реально открывшаяся @{for ...}/@{if ...},
+        // см. isMindboxConstruct в diagnostics-view.js); удаляем именно ту
+        // строку, на которой стоим.
+        const tagText = isMindboxConstruct(u.tagName) ? mindboxOpenLabel(u.tagName) : `<${u.tagName}>`;
         acceptBtn.title = `Удалить ${tagText} из результата`;
         acceptBtn.addEventListener("click", () => acceptDeletion(u));
       } else {
-        acceptBtn.title =
-          u.kind === "unopened"
-            ? `Добавить <${u.tagName}> в результат`
-            : isMindboxConstruct(u.tagName)
-              ? `Добавить ${mindboxCloseLabel(u.tagName)} в результат`
-              : `Добавить </${u.tagName}> в результат`;
+        acceptBtn.title = isMindboxConstruct(u.tagName)
+          ? `Добавить ${mindboxCloseLabel(u.tagName)} в результат`
+          : `Добавить </${u.tagName}> в результат`;
         acceptBtn.addEventListener("click", () => acceptSuggestion(u));
       }
       main.appendChild(acceptBtn);
@@ -207,19 +191,18 @@
       main.appendChild(rejectBtn);
       popup.appendChild(main);
 
-      // Для парных unopened/extra (см. pairId в src/formatter.ts), а
-      // также для unclosed (своя же собственная запись, просто её вторая,
-      // открывающая, сторона) — ещё одна маленькая серая строка снизу со
-      // ссылкой на строку ПАРНОГО тега, чтобы не искать её глазами по
-      // всему выводу. Номер кликабелен — скроллит к этой строке (см.
+      // Своя же собственная запись, просто её вторая, открывающая,
+      // сторона — ещё одна маленькая серая строка снизу со ссылкой на
+      // строку ПАРНОГО тега, чтобы не искать её глазами по всему выводу.
+      // Номер кликабелен — скроллит к этой строке (см.
       // .suggest-popup-pair-link/scrollRowIntoView), ничего не подсвечивая:
       // сам парный тег и так уже отмечен собственным флажком в колонке
       // номеров. Текст подписи — см. pairLabelFor: у попапа на РЕАЛЬНОМ,
       // уже существующем в письме теге (сам unclosed на своём месте
-      // открытия, сам extra) парный тег ЕЩЁ НЕ существует — потому
-      // "не найден"; у попапа на ПРЕДЛОЖЕННОМ (пока не принятом) теге
-      // парный, наоборот, уже реально есть в письме — потому "найден".
-      // pairRowOverride — только у дубликата на открывающей стороне (см.
+      // открытия) парный тег ЕЩЁ НЕ существует — потому "не найден"; у
+      // попапа на ПРЕДЛОЖЕННОМ (пока не принятом) теге парный, наоборот,
+      // уже реально есть в письме — потому "найден". pairRowOverride —
+      // только у дубликата на открывающей стороне (см.
       // pairedRowForOpenSide ниже): обычный pairedRow(u) для unclosed
       // всегда возвращает строку ОТКРЫТИЯ, а тут сам попап уже там стоит,
       // ссылаться нужно, наоборот, на строку подсказки.
@@ -241,21 +224,16 @@
     }
 
     for (const u of workingTags) {
-      const isExtra = u.kind === "extra";
-      if (!isExtra && u.insertConfidence !== "reliable") continue;
-      const selector = isExtra
-        ? `.extra-tag-anchor[data-uid="${u.__uid}"]`
-        : `.suggested-tag[data-uid="${u.__uid}"]`;
-      addPopup(u, output.querySelector(selector), isExtra ? "delete" : "add", undefined, false);
+      if (u.insertConfidence !== "reliable") continue;
+      const selector = `.suggested-tag[data-uid="${u.__uid}"]`;
+      addPopup(u, output.querySelector(selector), "add", undefined, false);
 
       // Дубликат на открывающей стороне (см. .unclosed-open-anchor/
-      // buildDisplayHtml) — единственный случай, где попап стоит на
-      // РЕАЛЬНОМ, уже существующем в письме теге (не на предложенном), so
-      // здесь именно "Удалить?", а не "Добавить?".
-      if (u.kind === "unclosed") {
-        const openEl = output.querySelector(`.unclosed-open-anchor[data-uid="${u.__uid}"]`);
-        addPopup(u, openEl, "delete", pairedRowForOpenSide(u), true);
-      }
+      // buildDisplayHtml) — попап стоит на РЕАЛЬНОМ, уже существующем в
+      // письме теге (не на предложенном), поэтому здесь именно
+      // "Удалить?", а не "Добавить?".
+      const openEl = output.querySelector(`.unclosed-open-anchor[data-uid="${u.__uid}"]`);
+      addPopup(u, openEl, "delete", pairedRowForOpenSide(u), true);
     }
     positionSuggestPopups(entries, wrapRect);
   }

@@ -27,22 +27,6 @@
     const mod100 = n % 100;
     return mod10 === 1 && mod100 !== 11 ? "незакрытый" : "незакрытых";
   }
-  // То же самое склонение, что и unclosedAdjective ("-ый"/"-ых" по тем же
-  // правилам), но для другого прилагательного — "неоткрытый" (не хватает
-  // родителя-обёртки, см. checkUnopenedChild в src/formatter.ts).
-  function unopenedAdjective(n) {
-    const mod10 = n % 10;
-    const mod100 = n % 100;
-    return mod10 === 1 && mod100 !== 11 ? "неоткрытый" : "неоткрытых";
-  }
-  // "Лишний"/"лишних" — то же правило (-ий/-их вместо -ый/-ых, но та же
-  // логика единственного числа при n===1, кроме *11) — для kind==="extra"
-  // (осиротевший закрывающий тег без пары, см. ExtraTagInfo).
-  function extraAdjective(n) {
-    const mod10 = n % 10;
-    const mod100 = n % 100;
-    return mod10 === 1 && mod100 !== 11 ? "лишний" : "лишних";
-  }
   // Согласование числительного со словом "конструкция" (1 конструкция,
   // 2 конструкции, 5 конструкций, ...) — для незакрытых @{for ...}/
   // @{if ...} (см. isMindboxConstruct в diagnostics-view.js), отдельно от
@@ -77,11 +61,11 @@
   // так и остались, мы просто перестали про них напоминать. Показываем
   // это отдельным красным сообщением, а не зелёным "сбалансированы".
   //
-  // workingTags — общий список ВСЕХ трёх видов диагностики (kind:
-  // "unclosed" | "unopened" | "extra", см. runFormat) — считаем их
-  // раздельными числительными ("N незакрытых, M неоткрытых, K лишних"),
-  // а не одной обезличенной суммой: конкретика важнее краткости, а
-  // составить фразу из трёх частей не сложнее, чем из двух.
+  // workingTags — список диагностики незакрытых тегов/конструкций (kind
+  // всегда "unclosed", см. applyFormatResult) — считаем раздельно для
+  // HTML-тегов и Mindbox-конструкций ("N незакрытых, M незакрытых
+  // конструкций"), а не одной обезличенной суммой: конкретика важнее
+  // краткости.
   function updateOutputStatus() {
     if (!checkUnclosedTags.checked || outputEditedManually) {
       outputStatus.textContent = "";
@@ -101,16 +85,6 @@
     const unclosedConstructCount = workingTags.filter(
       (e) => e.kind === "unclosed" && isMindboxConstruct(e.tagName),
     ).length;
-    // Спаренный "неоткрытый" (kind==="unopened" с pairId) — это то же
-    // самое, что и его пара в "лишних" (см. checkUnopenedChild/pairId в
-    // src/formatter.ts): одна и та же строка-подсказка "Добавить?" всё
-    // ещё показывается (это по-прежнему рабочий способ починить), но в
-    // СЧЁТЕ участвует только один раз, под именем "лишний" — нет смысла
-    // сообщать об одном и том же дефекте дважды под разными словами.
-    // Несвязанный ("сирота") unopened, без пары — считается отдельно,
-    // там правда нечего удалять, только добавить недостающий родитель.
-    const unopenedCount = workingTags.filter((e) => e.kind === "unopened" && e.pairId == null).length;
-    const extraCount = workingTags.filter((e) => e.kind === "extra").length;
     const allRejected =
       openCount === 0 && rejectedCount > 0 && rejectedCount === totalFlaggedCount;
     let text;
@@ -124,12 +98,6 @@
         clauses.push(
           `${unclosedConstructCount} ${unclosedConstructAdjective(unclosedConstructCount)} ${pluralizeConstruct(unclosedConstructCount)}`,
         );
-      }
-      if (unopenedCount > 0) {
-        clauses.push(`${unopenedCount} ${unopenedAdjective(unopenedCount)} ${pluralizeTag(unopenedCount)}`);
-      }
-      if (extraCount > 0) {
-        clauses.push(`${extraCount} ${extraAdjective(extraCount)} ${pluralizeTag(extraCount)}`);
       }
       text = `Возможно: ${clauses.join(", ")}`;
       cls = "status-alert";

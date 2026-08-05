@@ -50,43 +50,22 @@
   // ним выглядел бы как явно некорректный дубль. Такие теги остаются
   // только с красным флажком, без предложения.
   //
-  // tags — общий список ВСЕХ трёх видов диагностики (u.kind ===
-  // "unclosed" | "unopened" | "extra", см. runFormat): для незакрытых и
-  // "неоткрытых" тегов подсказка — это одна вставленная серая строка
-  // перед insertBeforeLine на глубине depth, различается только текст
-  // самого тега (закрывающий тег для unclosed, открывающий — для
-  // unopened) и то, что unopenedTags.insertConfidence всегда "reliable"
-  // по построению (см. checkUnopenedChild в src/formatter.ts — там уже
-  // отфильтрованы неоднозначные случаи через leakStack).
-  //
-  // "extra" — принципиально другое: это не вставка НОВОЙ строки, а
-  // пометка УЖЕ СУЩЕСТВУЮЩЕЙ (осиротевший закрывающий тег без пары, см.
-  // ExtraTagInfo) — предложение "Удалить?" её целиком. Поэтому такие
-  // записи не участвуют в insertions вовсе (см. фильтр kind !== "extra"
-  // ниже), а вместо этого их существующая строка оборачивается в
-  // <span class="extra-tag-anchor" data-uid="..."> — тот же приём для
-  // поиска реальных координат в DOM, что и .suggested-tag у вставленных
-  // строк, только оборачивает не новый, а уже существующий текст.
+  // tags — список диагностики незакрытых тегов/конструкций (u.kind
+  // всегда "unclosed", см. applyFormatResult): подсказка — это одна
+  // вставленная серая строка перед insertBeforeLine на глубине depth
+  // (закрывающий тег/конструкция). "Место открытия" (u.line) и "место
+  // предполагаемой починки" (u.insertBeforeLine) — РАЗНЫЕ строки
+  // документа, порой очень далеко друг от друга (см. renderPopups — там
+  // у этой же строки будет ещё один, дублирующий попап).
   function buildDisplayHtml(html, tags) {
     const highlightedLines = highlightHtml(html).split("\n");
     const insertions = tags
-      .filter((u) => u.kind !== "extra" && u.insertConfidence === "reliable")
+      .filter((u) => u.insertConfidence === "reliable")
       .slice()
       .sort((a, b) => a.insertBeforeLine - b.insertBeforeLine || b.depth - a.depth);
-    const extraByLine = new Map();
-    for (const u of tags) {
-      if (u.kind === "extra") extraByLine.set(u.line, u);
-    }
-    // Только для kind==="unclosed": единственный случай, где "место
-    // открытия" (u.line) и "место предполагаемой починки"
-    // (u.insertBeforeLine) — РАЗНЫЕ строки документа, порой очень далеко
-    // друг от друга (см. renderPopups — там у этой же строки будет ещё
-    // один, дублирующий попап). У unopened line===insertBeforeLine всегда
-    // (см. присвоение line ниже, в applyFormatResult), так что для него
-    // отдельный якорь не нужен.
     const unclosedOpenByLine = new Map();
     for (const u of tags) {
-      if (u.kind === "unclosed" && u.insertConfidence === "reliable") unclosedOpenByLine.set(u.line, u);
+      if (u.insertConfidence === "reliable") unclosedOpenByLine.set(u.line, u);
     }
 
     const resultLines = [];
@@ -98,12 +77,7 @@
       while (insIdx < insertions.length && insertions[insIdx].insertBeforeLine === orig) {
         const u = insertions[insIdx];
         const indent = "  ".repeat(u.depth);
-        const tagText =
-          u.kind === "unopened"
-            ? "<" + u.tagName + ">"
-            : isMindboxConstruct(u.tagName)
-              ? mindboxCloseLabel(u.tagName)
-              : "</" + u.tagName + ">";
+        const tagText = isMindboxConstruct(u.tagName) ? mindboxCloseLabel(u.tagName) : "</" + u.tagName + ">";
         resultLines.push(
           `<span class="suggested-line">${escapeHtml(indent)}` +
             `<span class="suggested-tag" data-uid="${u.__uid}">${escapeHtml(tagText)}</span></span>`,
@@ -113,28 +87,18 @@
       }
       if (orig < highlightedLines.length) {
         origToFinalRow[orig] = resultLines.length;
-        const extra = extraByLine.get(orig);
         const unclosedOpen = unclosedOpenByLine.get(orig);
-        if (extra) {
-          // Отступ оставляем СНАРУЖИ якоря (как и у .suggested-tag —
-          // см. вставку строк-подсказок выше): иначе его ширина попадает
-          // в getBoundingClientRect и computePopupSide начинает считать
-          // тег шире, чем он есть на самом деле, из-за чего попап иногда
-          // без нужды уезжает направо. Отступ у "ничьего" закрывающего
-          // тега — всегда ЧИСТЫЕ пробелы (this.indent() в
-          // src/formatter.ts), без тегов внутри, так что вырезать его
+        if (unclosedOpen) {
+          // Якорь для ДУБЛИКАТА попапа у места открытия (см.
+          // unclosedOpenByLine выше и renderPopups) — по нему renderPopups
+          // находит реальные координаты в DOM. Отступ оставляем СНАРУЖИ
+          // якоря (как и у .suggested-tag — см. вставку строк-подсказок
+          // выше): иначе его ширина попадает в getBoundingClientRect и
+          // computePopupSide начинает считать тег шире, чем он есть на
+          // самом деле, из-за чего попап иногда без нужды уезжает
+          // направо. Отступ у ЛЮБОЙ строки — чистые пробелы (this.indent()
+          // в src/formatter.ts), без тегов внутри, так что вырезать его
           // простым regex по началу строки безопасно.
-          const line = highlightedLines[orig];
-          const leadingWs = /^ */.exec(line)[0];
-          resultLines.push(
-            leadingWs +
-              `<span class="extra-tag-anchor" data-uid="${extra.__uid}">${line.slice(leadingWs.length)}</span>`,
-          );
-        } else if (unclosedOpen) {
-          // Тот же приём — якорь для ДУБЛИКАТА попапа у места открытия
-          // (см. unclosedOpenByLine выше и renderPopups). Отступ у ЛЮБОЙ
-          // строки — те же чистые пробелы this.indent(), приём безопасен
-          // не только для "ничьих" закрывающих тегов.
           const line = highlightedLines[orig];
           const leadingWs = /^ */.exec(line)[0];
           resultLines.push(
@@ -147,21 +111,12 @@
       }
     }
 
-    // Красный флажок на СВОЕЙ строке пропускаем для "неоткрытых", у
-    // которых есть пара (pairId) — сама пара уже ЯВЛЯЕТСЯ "лишним" тегом
-    // (kind==="extra") у себя на строке, и он получит СВОЙ красный
-    // флажок ниже по этому же tags.map (та запись присутствует в общем
-    // списке). Показывать два флажка на два конца одной и той же связки
-    // избыточно — источник проблемы нагляднее там, где стоит сам лишний
-    // тег, а не там, где просто заметили нехватку родителя.
-    const openFlags = tags
-      .filter((u) => !(u.kind === "unopened" && u.pairId != null))
-      .map((u) => ({
-        row: origToFinalRow[u.line],
-        tagName: u.tagName,
-        uid: u.__uid,
-        kind: u.kind,
-      }));
+    const openFlags = tags.map((u) => ({
+      row: origToFinalRow[u.line],
+      tagName: u.tagName,
+      uid: u.__uid,
+      kind: u.kind,
+    }));
 
     return {
       displayHtml: resultLines.join("\n"),
@@ -201,25 +156,10 @@
     renderPopups();
   }
 
-  // role — "open" (красный, на строке самой проблемы) или "close" (серый,
-  // на строке ещё не решённой подсказки — для kind="extra" такой роли не
-  // бывает вовсе, у неё нет отдельной "вставленной" строки, только сама
-  // проблемная); kind — "unclosed" (не хватает закрывающего тега),
-  // "unopened" (не хватает родителя-обёртки, см. checkUnopenedChild в
-  // src/formatter.ts) или "extra" (сам этот тег — осиротевший закрывающий
-  // без пары, см. ExtraTagInfo, предлагается удалить). tagName для
-  // kind="unopened"/"extra" — это имя тега-СВЯЗИ (пропущенного родителя
-  // или лишнего закрывающего), а не самого узла на этой строке — так и
-  // формулируются заголовки ниже.
+  // role — "open" (красный, на строке самой проблемы, где тег реально
+  // открылся) или "close" (серый, на строке ещё не решённой подсказки —
+  // предполагаемое место закрывающего тега/конструкции).
   function flagTitle(kind, role, tagName) {
-    if (kind === "unopened") {
-      return role === "open"
-        ? `Похоже, здесь пропущен родительский тег <${tagName}>`
-        : `Добавить открывающий тег <${tagName}>?`;
-    }
-    if (kind === "extra") {
-      return `Похоже, этот тег лишний — нет пары <${tagName}>`;
-    }
     if (isMindboxConstruct(tagName)) {
       return role === "open"
         ? `Конструкция ${mindboxOpenLabel(tagName)} может быть не закрыта`
@@ -229,18 +169,15 @@
   }
 
   // Клик по видимому флажку — переход к ПАРНОМУ месту (реальные
-  // координаты через .suggested-tag, либо через .extra-tag-anchor для
-  // kind="extra" — там это не вставленная строка, а помеченная
-  // существующая); клик по серому — обратно к красному (по row, у
-  // открывающего тега нет своего DOM-маркера). Общая для флажков внутри
-  // номеров строк (см. renderOutputLineNumbers) и для клика по ним же —
-  // подсказки за пределами экрана (.scroll-hint) используют ДРУГую
-  // логику — прыгают к себе самим, а не к парному, см. setScrollHint.
+  // координаты через .suggested-tag); клик по серому — обратно к
+  // красному (по row, у открывающего тега нет своего DOM-маркера). Общая
+  // для флажков внутри номеров строк (см. renderOutputLineNumbers) и для
+  // клика по ним же — подсказки за пределами экрана (.scroll-hint)
+  // используют ДРУГую логику — прыгают к себе самим, а не к парному, см.
+  // setScrollHint.
   function handleFlagClick(role, kind, uid) {
     if (role === "open") {
-      const selector =
-        kind === "extra" ? `.extra-tag-anchor[data-uid="${uid}"]` : `.suggested-tag[data-uid="${uid}"]`;
-      const tagEl = output.querySelector(selector);
+      const tagEl = output.querySelector(`.suggested-tag[data-uid="${uid}"]`);
       if (tagEl) scrollElementIntoView(tagEl);
     } else {
       const paired = lastOpenFlags.find((f) => f.uid === uid);

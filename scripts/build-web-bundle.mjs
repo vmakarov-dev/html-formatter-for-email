@@ -18,7 +18,6 @@ const files = [
   "dist/src/cssFormatter.js",
   "dist/src/typograf.js",
   "dist/src/serviceCleanup.js",
-  "dist/src/unopenedTags.js",
   "dist/src/formatter.js",
 ];
 

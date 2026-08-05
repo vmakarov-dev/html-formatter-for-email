@@ -435,6 +435,30 @@ test("типограф (английский): ${...}-вставки защищ�
   assert.equal(out, "<p>${Order.Total > 100 or Order.HasDiscount} plain text or&nbsp;more.</p>");
 });
 
+test("типограф: $(...)-вставки другого шаблонизатора (например, SendSay) тоже защищены — кавычки внутри не превращаются в «ёлочки»/лапки", () => {
+  const input = `<p>Условие: $(if [Field: Tier] == "PLATINUM") текст на русском</p>`;
+  const out = formatHtml(input);
+  assert.equal(out, '<p>Условие: $(if [Field: Tier] == "PLATINUM") текст на&nbsp;русском</p>');
+});
+
+test("типограф: защита от порчи распространяется на ЛЮБОЙ $(...)/$[...] — например, ещё не встречавшийся вариант $[...]", () => {
+  const input = `<p>Условие: $[if Tier == "GOLD"] текст на русском</p>`;
+  const out = formatHtml(input);
+  assert.equal(out, '<p>Условие: $[if Tier == "GOLD"] текст на&nbsp;русском</p>');
+});
+
+test("типограф: защита распространена на ЛЮБОЕ {...} и [...] без обязательного маркера $ — например, голые merge-теги вида [Field: Member_Id]", () => {
+  const input = `<p>Метка: [Field: Member_Id] и текст. Значение: {price - 10} тоже.</p>`;
+  const out = formatHtml(input);
+  assert.equal(out, "<p>Метка: [Field: Member_Id] и&nbsp;текст. Значение: {price - 10} тоже.</p>");
+});
+
+test("типограф: круглые скобки БЕЗ маркера $ — это обычная человеческая пунктуация, типографика внутри них по-прежнему работает", () => {
+  const input = `<p>Текст с пояснением (просто скобки - вот так) продолжается.</p>`;
+  const out = formatHtml(input);
+  assert.equal(out, "<p>Текст с&nbsp;пояснением (просто скобки&nbsp;— вот так) продолжается.</p>");
+});
+
 test("типограф: двуязычный узел (английское определение + русский перевод) — оба конвейера срабатывают в одном тексте", () => {
   const input = `<p>Compliment is a remark that expresses approval, admiration, or respect. Ремарка, которая выражает одобрение, восхищение или уважение.</p>`;
   const out = formatHtml(input);
@@ -763,56 +787,30 @@ test("регрессия: схлопывание пробелов в inline-по
   );
 });
 
-test("диагностика неоткрытых тегов: пропущенный <tr> перед <td> — флагуется", () => {
+test("диагностика тегов: пропущенный родитель НЕ предлагается вставить (тег, которого нет в вёрстке вообще) — просто не флагуется", () => {
+  // По явному решению: форматтер больше не выдумывает тег, у которого нет
+  // ни открывающей, ни закрывающей части в исходнике вообще — слишком
+  // много тонкостей, остаётся на усмотрение пользователя. <td> оказался
+  // прямым ребёнком <tbody> (родного <tr> нет вовсе) — это НЕ считается
+  // незакрытым тегом (unclosedTags пуст), просто молча пропускается.
   const input = `<table><tbody><td>x</td></tbody></table>`;
-  const { unopenedTags } = formatHtmlWithDiagnostics(input, { cleanServiceAttrs: false });
-  // <td> оказался прямым ребёнком <tbody> — единственный валидный родитель
-  // <td> это <tr>, значит его пропустили. Место вставки — строка, где
-  // печатается сам <td> (perед его открывающим тегом).
-  assert.deepEqual(unopenedTags, [{ tagName: "tr", insertBeforeLine: 2, depth: 2 }]);
+  const { unclosedTags } = formatHtmlWithDiagnostics(input, { cleanServiceAttrs: false });
+  assert.deepEqual(unclosedTags, []);
 });
 
-test("диагностика неоткрытых тегов: несколько однотипных пропущенных соседей флагуются один раз (серия)", () => {
+test("диагностика тегов: несколько одинаковых пропущенных родителей подряд — тоже не флагуются", () => {
   const input = `<table><tbody><td>a</td><td>b</td></tbody></table>`;
-  const { unopenedTags } = formatHtmlWithDiagnostics(input, { cleanServiceAttrs: false });
-  assert.deepEqual(unopenedTags, [{ tagName: "tr", insertBeforeLine: 2, depth: 2 }]);
+  const { unclosedTags } = formatHtmlWithDiagnostics(input, { cleanServiceAttrs: false });
+  assert.deepEqual(unclosedTags, []);
 });
 
-test("диагностика неоткрытых тегов: норма — в норме пустой список", () => {
-  const input = `<table><tr><td>x</td></tr></table>`;
-  const { unopenedTags } = formatHtmlWithDiagnostics(input, { cleanServiceAttrs: false });
-  assert.deepEqual(unopenedTags, []);
-});
-
-test("диагностика 'лишних' тегов: осиротевший </tr> без открывающего парного тега — находит пару в unopenedTags", () => {
-  // Типичный случай ручной правки: вырезали открывающий <tr>, но его
-  // родной закрывающий </tr> остался в исходнике дальше по документу —
-  // теперь он "ничей" (resolveStrayClose не находит для него ни
-  // настоящего открытого предка, ни чужого совпадения). Раз где-то раньше
-  // уже нашли пропущенный <tr> с тем же именем (unopenedTags) — связываем
-  // их общим pairId.
-  const input = [
-    "<table>",
-    "<tbody>",
-    "<tr><td>a</td></tr>",
-    '<td class="orphan">b</td>',
-    "</tr>",
-    "</tbody>",
-    "</table>",
-  ].join("\n");
-  const { unopenedTags, extraTags } = formatHtmlWithDiagnostics(input, { cleanServiceAttrs: false });
-  assert.deepEqual(unopenedTags, [{ tagName: "tr", insertBeforeLine: 7, depth: 2, pairId: 1 }]);
-  assert.deepEqual(extraTags, [{ tagName: "tr", line: 10, depth: 2, pairId: 1 }]);
-});
-
-test("диагностика 'лишних' тегов: без осиротевшего закрывающего тега extraTags остаётся пустым, а pairId не проставляется", () => {
-  const input = `<table><tbody><td>x</td></tbody></table>`;
-  const { unopenedTags, extraTags } = formatHtmlWithDiagnostics(input, { cleanServiceAttrs: false });
-  assert.deepEqual(unopenedTags, [{ tagName: "tr", insertBeforeLine: 2, depth: 2 }]);
-  assert.deepEqual(extraTags, []);
-});
-
-test("диагностика 'лишних' тегов: две отдельные пары матчатся в порядке появления по документу (FIFO), а не как стек", () => {
+test("регрессия: два отдельных вырезанных <tr> подряд (одноимённые 'подозрения') не путают друг друга и не портят вложенность", () => {
+  // Внутренний предохранитель resolveStrayClose (см.
+  // suspectedMissingParentCounts/checkMissingParentGuard в
+  // src/formatter.ts) — просто счётчик по имени тега, а не очередь пар,
+  // как раньше у публичной диагностики. Два НЕЗАВИСИМЫХ дефекта с ОДНИМ
+  // и тем же именем тега ("tr") должны оба остаться на своём месте, не
+  // перепутавшись и не утащив друг друга не туда.
   const input = [
     "<table>",
     "<tbody>",
@@ -824,19 +822,30 @@ test("диагностика 'лишних' тегов: две отдельны�
     "</tbody>",
     "</table>",
   ].join("\n");
-  const { unopenedTags, extraTags } = formatHtmlWithDiagnostics(input, { cleanServiceAttrs: false });
-  assert.deepEqual(
-    unopenedTags.map((u) => u.pairId),
-    [1, 2],
+  const { html, unclosedTags } = formatHtmlWithDiagnostics(input, { cleanServiceAttrs: false });
+  assert.deepEqual(unclosedTags, []);
+  assert.equal(
+    html,
+    [
+      "<table>",
+      "  <tbody>",
+      "    <td>",
+      "      row1",
+      "    </td>",
+      "    </tr>",
+      "    <tr>",
+      "      <td>",
+      "        mid",
+      "      </td>",
+      "    </tr>",
+      "    <td>",
+      "      row2",
+      "    </td>",
+      "    </tr>",
+      "  </tbody>",
+      "</table>",
+    ].join("\n"),
   );
-  assert.deepEqual(
-    extraTags.map((e) => e.pairId),
-    [1, 2],
-  );
-  // Первая (более ранняя) пропущенная строка парится с ПЕРВЫМ "ничьим"
-  // </tr>, а не со вторым, ближайшим по вложенности стеку.
-  assert.equal(unopenedTags[0].insertBeforeLine < extraTags[0].line, true);
-  assert.equal(extraTags[0].line < unopenedTags[1].insertBeforeLine, true);
 });
 
 test("регрессия: вырезанный <tr> внутри вложенной таблицы с несколькими строками не ломает вложенность внешних tr/td (matchesAncestorClose больше не хватает repeatable-предка)", () => {
@@ -866,15 +875,10 @@ test("регрессия: вырезанный <tr> внутри вложенн�
     "</tr>",
     "</table>",
   ].join("\n");
-  const { html, unclosedTags, unopenedTags, extraTags } = formatHtmlWithDiagnostics(input, {
+  const { html, unclosedTags } = formatHtmlWithDiagnostics(input, {
     cleanServiceAttrs: false,
   });
   assert.deepEqual(unclosedTags, []);
-  // "</tr>" сразу после "<td>a</td>" — ровно тот самый осиротевший
-  // закрывающий тег вырезанной строки (см. диагностику "лишних" тегов
-  // ниже) — теперь корректно паруется с этой записью через pairId.
-  assert.deepEqual(unopenedTags, [{ tagName: "tr", insertBeforeLine: 4, depth: 4, pairId: 1 }]);
-  assert.deepEqual(extraTags, [{ tagName: "tr", line: 7, depth: 4, pairId: 1 }]);
   // Вторая строка вложенной таблицы должна остаться ЕЁ потомком (глубина
   // 4 — как и td "a" рядом), а не всплыть на глубину внешнего tr (1).
   assert.equal(
@@ -901,13 +905,16 @@ test("регрессия: вырезанный <tr> внутри вложенн�
   );
 });
 
-test("диагностика неоткрытых тегов: MSO-приём (<tr> открыт в условном комментарии, <td> снаружи) — не флагуется", () => {
+test("регрессия: MSO-приём (<tr> открыт в условном комментарии, <td> снаружи) — не ломает вложенность и не флагуется как незакрытый", () => {
   // Реальный приём вёрстки под Outlook: <tr> открывается внутри
   // <!--[if mso]--> и намеренно не закрывается там же, а видимый <td>
   // идёт уже СНАРУЖИ комментария (комментарий "прозрачен" для родителя,
   // так что структурный родитель <td> — <table>, а не <tr>). Раз <tr> всё
-  // ещё "утёк" (висит в leakStack), считаем его логически открытым и не
-  // флагуем — иначе это была бы ложная тревога на легитимную разметку.
+  // ещё "утёк" (висит в leakStack), внутренний предохранитель
+  // checkMissingParentGuard считает его логически открытым и не портит
+  // ложным "подозрением" resolveStrayClose — иначе парная "</tr>" внутри
+  // второго MSO-комментария могла бы не найти пару и всё дальше по
+  // документу съехало бы по отступу.
   const input = [
     "<table>",
     "<!--[if mso]>",
@@ -919,8 +926,24 @@ test("диагностика неоткрытых тегов: MSO-приём (<t
     "<![endif]-->",
     "</table>",
   ].join("\n");
-  const { unopenedTags } = formatHtmlWithDiagnostics(input, { cleanServiceAttrs: false });
-  assert.deepEqual(unopenedTags, []);
+  const { html, unclosedTags } = formatHtmlWithDiagnostics(input, { cleanServiceAttrs: false });
+  assert.deepEqual(unclosedTags, []);
+  assert.equal(
+    html,
+    [
+      "<table>",
+      "  <!--[if mso]>",
+      "    <tr>",
+      "      <![endif]-->",
+      "      <td>",
+      "        content",
+      "      </td>",
+      "      <!--[if mso]>",
+      "    </tr>",
+      "  <![endif]-->",
+      "</table>",
+    ].join("\n"),
+  );
 });
 
 test("диагностика пустых атрибутов: базовые случаи (src/class/href) флагуются, alt — нет; src/href в 'надо заполнить', class — в 'можно удалить'", () => {
@@ -1046,16 +1069,15 @@ test("регрессия: вырезанный <table> в многоуровне
   assert.ok(afterLine.startsWith("    "), "строка 'after' должна остаться на глубине вложенного <td>");
 });
 
-test("диагностика неоткрытых тегов: пропущенный <table> перед <tr> — флагуется как пара 'unopened + extra', а не как unclosedTags (регрессия по реальному MSO-письму)", () => {
+test("регрессия: вырезанный <table> в MSO-колонке — 'ничей' </table> не утаскивает чужой MSO table за собой (реальный дефект из письма)", () => {
   // Реальный случай: в MSO-колонке (<!--[if mso]><table><tr><td><![endif]-->)
   // видимый <div>-контент рядом ДОЛЖЕН иметь СВОЙ отдельный <table>,
-  // оборачивающий <tr> — но его вырезали. Раньше это ловилось только как
-  // два разрозненных unclosedTags (tr + td) вместо одной понятной пары
-  // "unopened <table> + лишний </table>": ближайший "утёкший" тег в
-  // leakStack на момент проверки — td (из MSO-комментария), а не table,
-  // так что старая проверка "есть ли ХОТЬ ГДЕ-ТО table в leakStack" (а
-  // table там как раз есть, просто дальше в стеке, ЭТО НЕ прямой предок)
-  // ложно принимала это за легитимный MSO-сплит и молчала.
+  // оборачивающий <tr> — но его вырезали. Стрей "</table>" внутри <div>
+  // не находит совпадения в "своём мире" (MSO table открыт ВНУТРИ
+  // условного комментария, а этот </table> — снаружи) — раньше без
+  // suspectedMissingParentCounts общий фолбэк-поиск resolveStrayClose
+  // ошибочно утаскивал ДАЛЁКИЙ MSO table за собой, ломая отступ всего,
+  // что шло дальше по документу (см. checkMissingParentGuard).
   const input = [
     "<!--[if mso]>",
     "<table><tr><td>",
@@ -1068,15 +1090,33 @@ test("диагностика неоткрытых тегов: пропущенн
     "</td></tr></table>",
     "<![endif]-->",
   ].join("\n");
-  const { unclosedTags, unopenedTags, extraTags } = formatHtmlWithDiagnostics(input, {
+  const { html, unclosedTags } = formatHtmlWithDiagnostics(input, {
     cleanServiceAttrs: false,
   });
   assert.deepEqual(unclosedTags, []);
-  assert.equal(unopenedTags.length, 1);
-  assert.equal(unopenedTags[0].tagName, "table");
-  assert.equal(extraTags.length, 1);
-  assert.equal(extraTags[0].tagName, "table");
-  assert.equal(unopenedTags[0].pairId, extraTags[0].pairId);
+  assert.equal(
+    html,
+    [
+      "<!--[if mso]>",
+      "  <table>",
+      "    <tr>",
+      "      <td>",
+      "        <![endif]-->",
+      "        <div>",
+      "          <tr>",
+      "            <td>",
+      "              content",
+      "            </td>",
+      "          </tr>",
+      "          </table>",
+      "        </div>",
+      "        <!--[if mso]>",
+      "      </td>",
+      "    </tr>",
+      "  </table>",
+      "<![endif]-->",
+    ].join("\n"),
+  );
 });
 
 test("регрессия: многострочный HTML-комментарий не сдвигает номера строк в диагностике для всего, что идёт после него", () => {
