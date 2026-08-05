@@ -94,20 +94,20 @@
   // этот тег незачем. Серая строка/попап исчезают, соседние строки
   // "схлопываются" на её место сами собой. lastCleanHtml не трогаем:
   // этой строки там никогда и не было, это было только предложение.
+  //
+  // ВСЕГДА renderOutput(), НИКОГДА reformatAfterAllResolved() — даже если
+  // это была последняя оставшаяся запись. Раньше (баг, найден пользователем)
+  // "последний отклонённый" запускал полный повторный прогон форматтера,
+  // а тот, не имея памяти об отклонении, тут же находил ТОТ ЖЕ дефект
+  // заново и создавал новую подсказку — с точки зрения пользователя клик
+  // по "✕" визуально не делал вообще ничего. lastCleanHtml при отклонении
+  // не меняется, значит и переформатировать заново нечего — полный
+  // реформат нужен только после acceptSuggestion/acceptDeletion, где
+  // содержимое реально изменилось.
   function rejectSuggestion(u) {
     removeByUid(u.__uid);
     rejectedCount += 1;
-    if (workingTags.length === 0) {
-      // reformatAfterAllResolved сбрасывает totalFlaggedCount/rejectedCount
-      // и считает диагностику заново — если отклонённый дефект и правда
-      // остался в HTML, он найдётся опять и покажется снова (см. коммент
-      // у reformatAfterAllResolved). Здесь rejectedCount++выше по факту
-      // тут же обнуляется — это нормально, статус всё равно пересчитает
-      // updateOutputStatus уже по итогам нового прохода.
-      reformatAfterAllResolved();
-    } else {
-      renderOutput();
-    }
+    renderOutput();
   }
 
   // Пользователь подтвердил удаление реально открывшегося, но так и не
@@ -138,14 +138,11 @@
 
   // Пользователь решил оставить тег как есть — оставляем строку как есть
   // в lastCleanHtml, просто убираем подсказку/флажок. Симметрично
-  // rejectSuggestion.
+  // rejectSuggestion (в том числе ВСЕГДА renderOutput(), см. комментарий
+  // там же) — lastCleanHtml не меняется, переформатировать нечего.
   function rejectDeletion(u) {
     removeByUid(u.__uid);
     rejectedCount += 1;
-    if (workingTags.length === 0) {
-      reformatAfterAllResolved();
-    } else {
-      renderOutput();
-    }
+    renderOutput();
   }
 
