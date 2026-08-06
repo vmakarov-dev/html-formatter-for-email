@@ -57,6 +57,12 @@ export function normalizeAttrsWhitespace(raw: string): string {
   let result = "";
   let inSingle = false;
   let inDouble = false;
+  // Та же логика, что и в parseElement (см. justSawEquals там же и
+  // подробный комментарий): кавычка открывает "цитируемое" значение
+  // ТОЛЬКО сразу после "=", иначе одиночная непарная кавычка внутри
+  // значения (см. findQuoteIssues в formatter.ts) переключала бы режим
+  // "внутри кавычек" непредсказуемо для остатка attrsRaw.
+  let justSawEquals = false;
   let i = 0;
   while (i < raw.length) {
     const c = raw[i];
@@ -67,9 +73,16 @@ export function normalizeAttrsWhitespace(raw: string): string {
       i++;
       continue;
     }
-    if (c === "'" || c === '"') {
+    if ((c === "'" || c === '"') && justSawEquals) {
       if (c === "'") inSingle = true;
       else inDouble = true;
+      justSawEquals = false;
+      result += c;
+      i++;
+      continue;
+    }
+    if (c === "=") {
+      justSawEquals = true;
       result += c;
       i++;
       continue;
@@ -79,6 +92,7 @@ export function normalizeAttrsWhitespace(raw: string): string {
       while (i < raw.length && /\s/.test(raw[i])) i++;
       continue;
     }
+    justSawEquals = false;
     result += c;
     i++;
   }
@@ -594,30 +608,71 @@ class Parser {
     let selfClosed = false;
     let inSingle = false;
     let inDouble = false;
+    // true сразу после "=" (и через пробелы после него, пока не решено,
+    // что дальше) — ровно как в настоящем алгоритме разбора HTML:
+    // кавычка открывает "цитируемое" значение атрибута ТОЛЬКО если ей
+    // непосредственно предшествует "=" (пробелы между ними допустимы и
+    // пропускаются). Без этого условия ОДИНОЧНАЯ случайная кавычка без
+    // пары где угодно внутри значения (частая опечатка — забыли закрыть
+    // href) переключала бы режим "внутри кавычек" до следующей попавшейся
+    // кавычки, а не находись такая — вообще до конца документа, утаскивая
+    // за собой разбор всего, что идёт дальше (реальный случай: одна
+    // незакрытая кавычка в href вызвала ошибочные 31 "незакрытый тег").
+    let justSawEquals = false;
+    let foundRealGt = false;
 
     while (this.pos < this.src.length) {
       const c = this.src[this.pos];
       if (inSingle) {
-        if (c === "'") inSingle = false;
+        if (c === "'") {
+          inSingle = false;
+          this.pos++;
+          continue;
+        }
+        // Предохранитель: похоже, кавычка так и не найдёт пары, а разбор
+        // уже заехал в начало СЛЕДУЮЩЕГО тега — обрываем прямо тут, не
+        // проглатывая остаток документа целиком. Сам факт непарной
+        // кавычки отдельно ловит диагностика (см. findQuoteIssues в
+        // formatter.ts) — здесь только защита структуры дерева.
+        if (c === "<" && /[a-zA-Z]/.test(this.src[this.pos + 1] ?? "")) {
+          break;
+        }
         this.pos++;
         continue;
       }
       if (inDouble) {
-        if (c === '"') inDouble = false;
+        if (c === '"') {
+          inDouble = false;
+          this.pos++;
+          continue;
+        }
+        if (c === "<" && /[a-zA-Z]/.test(this.src[this.pos + 1] ?? "")) {
+          break;
+        }
         this.pos++;
         continue;
       }
-      if (c === "'") {
-        inSingle = true;
+      if ((c === "'" || c === '"') && justSawEquals) {
+        if (c === "'") inSingle = true;
+        else inDouble = true;
+        justSawEquals = false;
         this.pos++;
         continue;
       }
-      if (c === '"') {
-        inDouble = true;
+      if (c === "=") {
+        justSawEquals = true;
         this.pos++;
         continue;
       }
+      if (justSawEquals && /\s/.test(c)) {
+        // Пробел между "=" и значением — допустим по спецификации,
+        // значение ещё не началось, флаг оставляем как есть.
+        this.pos++;
+        continue;
+      }
+      justSawEquals = false;
       if (c === ">") {
+        foundRealGt = true;
         break;
       }
       this.pos++;
@@ -630,7 +685,11 @@ class Parser {
     }
     attrsRaw = attrsRaw.trim();
 
-    this.pos += 1; // пропускаем '>'
+    // Пропускаем реальный '>' только если он и правда был найден — если
+    // сюда попали через предохранитель (см. выше), this.pos уже стоит на
+    // '<' следующего тега, пропускать нечего (да и нечего "пропускать" —
+    // настоящего '>' у этого тега в исходнике не было вовсе).
+    if (foundRealGt) this.pos += 1;
 
     const voidElement = isVoidElement(tagName);
     const inline = isInlineElement(tagName);

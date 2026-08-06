@@ -15,22 +15,36 @@
   // id="popupConnectors"> из HTML и .popup-connectors из CSS.
   const POPUP_GAP = 15; // отступ между попапом и точкой на теге
 
-  // С какой стороны тега (left/right) ставить попап: слева — если там
+  // Объединяющий прямоугольник нескольких DOMRect — нужен, когда у попапа
+  // НЕСКОЛЬКО целей сразу (см. запрос пользователя про группу незакрытых
+  // тегов: один попап "Добавить?", но линии-указатели ведут сразу к
+  // первому И последнему тегу группы). Позиционирование (с какой стороны
+  // встать, на какой высоте) считается по этому объединению — попап
+  // получается по центру между всеми целями, а не наезжает на одну из них.
+  function unionRect(rects) {
+    const left = Math.min(...rects.map((r) => r.left));
+    const right = Math.max(...rects.map((r) => r.right));
+    const top = Math.min(...rects.map((r) => r.top));
+    const bottom = Math.max(...rects.map((r) => r.bottom));
+    return { left, right, top, bottom, width: right - left, height: bottom - top };
+  }
+
+  // С какой стороны цели (left/right) ставить попап: слева — если там
   // достаточно места (не заходя за левый край .output-wrap), иначе —
-  // справа от тега. Это и есть решение обеих исходных проблем: попап
+  // справа от цели. Это и есть решение обеих исходных проблем: попап
   // либо помещается слева целиком, либо переставляется на сторону, где
   // места заведомо достаточно, а не "прижимается" туда же силой.
-  function choosePopupSide(tagRect, wrapRect, popupWidth) {
-    const availableLeft = tagRect.left - wrapRect.left;
+  function choosePopupSide(targetRect, wrapRect, popupWidth) {
+    const availableLeft = targetRect.left - wrapRect.left;
     return availableLeft >= popupWidth + POPUP_GAP ? "left" : "right";
   }
 
-  function naturalPlacement(tagRect, wrapRect, popupWidth, popupHeight, side) {
-    const centerY = tagRect.top - wrapRect.top + tagRect.height / 2;
+  function naturalPlacement(targetRect, wrapRect, popupWidth, popupHeight, side) {
+    const centerY = targetRect.top - wrapRect.top + targetRect.height / 2;
     const left =
       side === "left"
-        ? tagRect.left - wrapRect.left - POPUP_GAP - popupWidth
-        : tagRect.right - wrapRect.left + POPUP_GAP;
+        ? targetRect.left - wrapRect.left - POPUP_GAP - popupWidth
+        : targetRect.right - wrapRect.left + POPUP_GAP;
     return { top: centerY - popupHeight / 2, left };
   }
 
@@ -50,51 +64,63 @@
     }
   }
 
-  // Линия-указатель от попапа до РЕАЛЬНОЙ точки на теге — считается
+  // Линия(-и)-указатель(и) от попапа до РЕАЛЬНЫХ точек-целей — считаются
   // заново из уже финальных (после разводки коллизий) координат, поэтому
-  // всегда бьёт точно в цель, даже если сам попап пришлось сдвинуть.
-  // Отступ конца стрелки от самого тега — раньше указатель утыкался
-  // прямо в край текста тега, теперь останавливается чуть раньше.
+  // всегда бьют точно в цель, даже если сам попап пришлось сдвинуть.
+  // Отступ конца стрелки от самой цели — раньше указатель утыкался прямо
+  // в край текста тега, теперь останавливается чуть раньше. entry.tagRects
+  // — МАССИВ (обычно один элемент, но для общего попапа группы незакрытых
+  // тегов — см. renderPopups — два: к первому и последнему тегу группы,
+  // см. запрос пользователя), рисуем по одной линии+точке на каждый.
   const CONNECTOR_GAP = 2;
   function drawConnectors(entries, wrapRect) {
     popupConnectors.innerHTML = "";
     const svgNS = "http://www.w3.org/2000/svg";
     for (const entry of entries) {
-      const { tagRect, side, top, left, width, height } = entry;
-      const tagX =
-        side === "left"
-          ? tagRect.left - wrapRect.left - CONNECTOR_GAP
-          : tagRect.right - wrapRect.left + CONNECTOR_GAP;
-      const tagY = tagRect.top - wrapRect.top + tagRect.height / 2;
+      const { tagRects, side, top, left, width, height } = entry;
       const popupX = side === "left" ? left + width : left;
       const popupY = top + height / 2;
+      for (const tagRect of tagRects) {
+        const tagX =
+          side === "left"
+            ? tagRect.left - wrapRect.left - CONNECTOR_GAP
+            : tagRect.right - wrapRect.left + CONNECTOR_GAP;
+        const tagY = tagRect.top - wrapRect.top + tagRect.height / 2;
 
-      const line = document.createElementNS(svgNS, "line");
-      line.setAttribute("x1", popupX);
-      line.setAttribute("y1", popupY);
-      line.setAttribute("x2", tagX);
-      line.setAttribute("y2", tagY);
-      popupConnectors.appendChild(line);
+        const line = document.createElementNS(svgNS, "line");
+        line.setAttribute("x1", popupX);
+        line.setAttribute("y1", popupY);
+        line.setAttribute("x2", tagX);
+        line.setAttribute("y2", tagY);
+        popupConnectors.appendChild(line);
 
-      const dot = document.createElementNS(svgNS, "circle");
-      dot.setAttribute("cx", tagX);
-      dot.setAttribute("cy", tagY);
-      dot.setAttribute("r", 2.5);
-      popupConnectors.appendChild(dot);
+        const dot = document.createElementNS(svgNS, "circle");
+        dot.setAttribute("cx", tagX);
+        dot.setAttribute("cy", tagY);
+        dot.setAttribute("r", 2.5);
+        popupConnectors.appendChild(dot);
+      }
     }
   }
 
   // Точка входа: entries — уже созданные (label+кнопки), но ещё без
-  // top/left попапы, каждый со своим tagRect. Все они уже должны быть в
-  // DOM (outputPopups), иначе getBoundingClientRect ниже не даст верную
+  // top/left попапы. Каждый — с entry.placementRects (по чему считать
+  // ПОЛОЖЕНИЕ самого попапа — обычно совпадает с целями линий, но для
+  // общего попапа группы незакрытых тегов это прямоугольники серых строк-
+  // подсказок, а НЕ реальные теги — попап должен стоять рядом со своей же
+  // подсказкой, а не посередине между далёким первым и последним тегом
+  // группы) и entry.tagRects (собственно цели линий-указателей, см.
+  // drawConnectors). Все нужные элементы уже должны быть в DOM
+  // (outputPopups), иначе getBoundingClientRect ниже не даст верную
   // ширину/высоту.
   function positionSuggestPopups(entries, wrapRect) {
     for (const entry of entries) {
       const rect = entry.el.getBoundingClientRect();
       entry.width = rect.width;
       entry.height = rect.height;
-      entry.side = choosePopupSide(entry.tagRect, wrapRect, entry.width);
-      const placement = naturalPlacement(entry.tagRect, wrapRect, entry.width, entry.height, entry.side);
+      const placementRect = unionRect(entry.placementRects);
+      entry.side = choosePopupSide(placementRect, wrapRect, entry.width);
+      const placement = naturalPlacement(placementRect, wrapRect, entry.width, entry.height, entry.side);
       entry.top = placement.top;
       entry.left = placement.left;
     }
@@ -108,45 +134,39 @@
   // === КОНЕЦ: изолированный блок "умного" позиционирования попапов ===
   // ==========================================================
 
-  // Попап "Добавить?"/"Удалить?" рядом с каждым отмеченным тегом.
-  // Координаты берутся напрямую из реальных координат уже
-  // отрендеренного якоря в DOM (getBoundingClientRect) — надёжнее и
-  // точнее, чем пересчитывать ширину отступа вручную по количеству
-  // символов. Якорь — вставленная строка-подсказка (<span
-  // class="suggested-tag">, только при insertConfidence === "reliable").
-  // Само размещение попапов — отдельный изолированный блок выше
-  // (positionSuggestPopups), эта функция только создаёт их содержимое.
+  // Попап "Добавить?"/"Удалить?". Координаты берутся напрямую из реальных
+  // координат уже отрендеренного якоря в DOM (getBoundingClientRect) —
+  // надёжнее и точнее, чем пересчитывать ширину отступа вручную по
+  // количеству символов. Само размещение попапов — отдельный
+  // изолированный блок выше (positionSuggestPopups), эта функция только
+  // создаёт их содержимое.
   //
-  // На каждую запись строится ДВА попапа — один у подсказки (как
-  // обычно), второй — дубликат у самого места открытия тега (см.
-  // .unclosed-open-anchor/buildDisplayHtml): "место проблемы" и "место
-  // починки" могут оказаться далеко друг от друга по документу, и без
-  // дубликата на экране в принципе не увидеть попап рядом с красным
-  // флажком, если прокрутить именно к нему.
+  // На каждую ГРУППУ (см. workingTags/UnclosedTagGroup в src/formatter.ts)
+  // строится:
+  // - ОДИН попап "Добавить?" у серой подсказки (общий на всю группу, даже
+  //   если тегов в ней несколько) — с линиями-указателями сразу к
+  //   ПЕРВОМУ и ПОСЛЕДНЕМУ тегу группы (см. запрос пользователя), а не к
+  //   самой подсказке: "место проблемы" и "место починки" могут оказаться
+  //   далеко друг от друга по документу.
+  // - По ОДНОМУ попапу "Удалить?" на КАЖДЫЙ тег группы, у самого места
+  //   его открытия (см. .unclosed-open-anchor/buildDisplayHtml) — в
+  //   отличие от "Добавить?" эта сторона осталась независимой по тегам:
+  //   удалить можно любой из открывающих тегов по отдельности, это не
+  //   единое действие (в отличие от вставки закрывающих — см. запрос
+  //   пользователя, который явно про ОДНО общее предложение добавления).
   function renderPopups() {
     outputPopups.innerHTML = "";
     const wrapRect = output.parentElement.getBoundingClientRect();
     const outputRect = output.getBoundingClientRect();
     const entries = [];
 
-    // mode — "delete" или "add", определяет и текст вопроса, и что делает
-    // ✓ (см. вызовы ниже): зависит от того, на какой из двух строк записи
-    // стоит именно этот попап (см. renderPopups ниже) — "Удалить?" там,
-    // где тег РЕАЛЬНО существует в письме (сам незакрытый открывающий),
-    // "Добавить?" там, где стоит только ПРЕДЛОЖЕННЫЙ, ещё не принятый
-    // закрывающий тег — его-то мы и добавили бы. Реальный тег можно
-    // только удалить, предложенного можно только добавить — никаких
-    // промежуточных вариантов.
-    function addPopup(u, tagEl, mode, pairRowOverride, isOpenSide) {
-      if (!tagEl) return;
-      const tagRect = tagEl.getBoundingClientRect();
-      // Тег прокручен за пределы видимой области #output по вертикали —
-      // не показываем попап впустую поверх соседних, не относящихся к
-      // нему строк.
-      if (tagRect.bottom < outputRect.top || tagRect.top > outputRect.bottom) return;
+    function isRectVisible(rect) {
+      return rect.bottom >= outputRect.top && rect.top <= outputRect.bottom;
+    }
 
-      const isDelete = mode === "delete";
-
+    // Общий "корпус" попапа (текст вопроса + кнопки ✓/✕) — используется и
+    // для группового "Добавить?", и для индивидуального "Удалить?".
+    function buildPopupShell(labelText, acceptTitle, onAccept, onReject) {
       const popup = document.createElement("div");
       popup.className = "suggest-popup";
 
@@ -154,86 +174,106 @@
       main.className = "suggest-popup-main";
 
       const label = document.createElement("span");
-      label.textContent = isDelete ? "Удалить?" : "Добавить?";
+      label.textContent = labelText;
       main.appendChild(label);
 
       const acceptBtn = document.createElement("button");
       acceptBtn.className = "accept";
       acceptBtn.type = "button";
       acceptBtn.textContent = "✓";
-      if (isDelete) {
-        // Открывающая сторона незакрытого тега — реальный ОТКРЫВАЮЩИЙ тег
-        // (либо, для Mindbox, реально открывшаяся @{for ...}/@{if ...},
-        // см. isMindboxConstruct в diagnostics-view.js); удаляем именно ту
-        // строку, на которой стоим.
-        const tagText = isMindboxConstruct(u.tagName) ? mindboxOpenLabel(u.tagName) : `<${u.tagName}>`;
-        acceptBtn.title = `Удалить ${tagText} из результата`;
-        acceptBtn.addEventListener("click", () => acceptDeletion(u));
-      } else {
-        acceptBtn.title = isMindboxConstruct(u.tagName)
-          ? `Добавить ${mindboxCloseLabel(u.tagName)} в результат`
-          : `Добавить </${u.tagName}> в результат`;
-        acceptBtn.addEventListener("click", () => acceptSuggestion(u));
-      }
+      acceptBtn.title = acceptTitle;
+      acceptBtn.addEventListener("click", onAccept);
       main.appendChild(acceptBtn);
 
       const rejectBtn = document.createElement("button");
       rejectBtn.className = "reject";
       rejectBtn.type = "button";
       rejectBtn.textContent = "✕";
-      if (isDelete) {
-        rejectBtn.title = "Не удалять";
-        rejectBtn.addEventListener("click", () => rejectDeletion(u));
-      } else {
-        rejectBtn.title = "Не добавлять";
-        rejectBtn.addEventListener("click", () => rejectSuggestion(u));
-      }
+      rejectBtn.title = labelText === "Удалить?" ? "Не удалять" : "Не добавлять";
+      rejectBtn.addEventListener("click", onReject);
       main.appendChild(rejectBtn);
+
       popup.appendChild(main);
-
-      // Своя же собственная запись, просто её вторая, открывающая,
-      // сторона — ещё одна маленькая серая строка снизу со ссылкой на
-      // строку ПАРНОГО тега, чтобы не искать её глазами по всему выводу.
-      // Номер кликабелен — скроллит к этой строке (см.
-      // .suggest-popup-pair-link/scrollRowIntoView), ничего не подсвечивая:
-      // сам парный тег и так уже отмечен собственным флажком в колонке
-      // номеров. Текст подписи — см. pairLabelFor: у попапа на РЕАЛЬНОМ,
-      // уже существующем в письме теге (сам unclosed на своём месте
-      // открытия) парный тег ЕЩЁ НЕ существует — потому "не найден"; у
-      // попапа на ПРЕДЛОЖЕННОМ (пока не принятом) теге парный, наоборот,
-      // уже реально есть в письме — потому "найден". pairRowOverride —
-      // только у дубликата на открывающей стороне (см.
-      // pairedRowForOpenSide ниже): обычный pairedRow(u) для unclosed
-      // всегда возвращает строку ОТКРЫТИЯ, а тут сам попап уже там стоит,
-      // ссылаться нужно, наоборот, на строку подсказки.
-      const pRow = pairRowOverride !== undefined ? pairRowOverride : pairedRow(u);
-      if (pRow != null) {
-        const pairInfo = document.createElement("div");
-        pairInfo.className = "suggest-popup-pair";
-        pairInfo.appendChild(document.createTextNode(pairLabelFor(u, isOpenSide)));
-        const pairLink = document.createElement("span");
-        pairLink.className = "suggest-popup-pair-link";
-        pairLink.textContent = String(pRow + 1);
-        pairLink.addEventListener("click", () => scrollRowIntoView(pRow));
-        pairInfo.appendChild(pairLink);
-        popup.appendChild(pairInfo);
-      }
-
-      outputPopups.appendChild(popup);
-      entries.push({ el: popup, tagRect });
+      return popup;
     }
 
-    for (const u of workingTags) {
-      if (u.insertConfidence !== "reliable") continue;
-      const selector = `.suggested-tag[data-uid="${u.__uid}"]`;
-      addPopup(u, output.querySelector(selector), "add", undefined, false);
+    // Маленькая серая строка снизу попапа со ссылкой на строку ПАРНОГО
+    // тега, чтобы не искать её глазами по всему выводу — см. pairLabelFor:
+    // у попапа на РЕАЛЬНОМ, уже существующем в письме теге (сам unclosed
+    // на своём месте открытия) парный тег ЕЩЁ НЕ существует — потому "не
+    // найден"; у попапа на ПРЕДЛОЖЕННОМ (пока не принятом) теге парный,
+    // наоборот, уже реально есть в письме — потому "найден".
+    function appendPairInfo(popup, row, label) {
+      if (row == null) return;
+      const pairInfo = document.createElement("div");
+      pairInfo.className = "suggest-popup-pair";
+      pairInfo.appendChild(document.createTextNode(label));
+      const pairLink = document.createElement("span");
+      pairLink.className = "suggest-popup-pair-link";
+      pairLink.textContent = String(row + 1);
+      pairLink.addEventListener("click", () => scrollRowIntoView(row));
+      pairInfo.appendChild(pairLink);
+      popup.appendChild(pairInfo);
+    }
 
-      // Дубликат на открывающей стороне (см. .unclosed-open-anchor/
-      // buildDisplayHtml) — попап стоит на РЕАЛЬНОМ, уже существующем в
-      // письме теге (не на предложенном), поэтому здесь именно
-      // "Удалить?", а не "Добавить?".
-      const openEl = output.querySelector(`.unclosed-open-anchor[data-uid="${u.__uid}"]`);
-      addPopup(u, openEl, "delete", pairedRowForOpenSide(u), true);
+    for (const g of workingTags) {
+      if (g.insertConfidence !== "reliable") continue;
+
+      // === "Добавить?" — один общий попап на всю группу ===
+      const suggestEls = output.querySelectorAll(`[data-group-uid="${g.__uid}"]`);
+      if (suggestEls.length > 0) {
+        const placementRects = [...suggestEls].map((el) => el.getBoundingClientRect());
+        if (placementRects.some(isRectVisible)) {
+          const first = g.tags[0];
+          const last = g.tags[g.tags.length - 1];
+          const openEls = [first, last === first ? null : last]
+            .filter(Boolean)
+            .map((t) => output.querySelector(`.unclosed-open-anchor[data-uid="${t.__uid}"]`))
+            .filter(Boolean);
+          const tagRects = openEls.length > 0 ? openEls.map((el) => el.getBoundingClientRect()) : placementRects;
+
+          const acceptTitle =
+            g.tags.length > 1
+              ? "Добавить все закрывающие теги группы в результат"
+              : isMindboxConstruct(first.tagName)
+                ? `Добавить ${mindboxCloseLabel(first.tagName)} в результат`
+                : `Добавить </${first.tagName}> в результат`;
+          const popup = buildPopupShell(
+            "Добавить?",
+            acceptTitle,
+            () => acceptGroupSuggestion(g),
+            () => rejectGroupSuggestion(g),
+          );
+          // Ссылку на парную строку показываем только для одиночного тега
+          // (как и раньше) — у группы из нескольких тегов "парных" строк
+          // сразу несколько, а обе цели и так уже видны по линиям-
+          // указателям на сам попап.
+          if (g.tags.length === 1) {
+            appendPairInfo(popup, pairedRow(first), pairLabelFor(first, false));
+          }
+          outputPopups.appendChild(popup);
+          entries.push({ el: popup, placementRects, tagRects });
+        }
+      }
+
+      // === "Удалить?" — по одному попапу на каждый тег группы ===
+      for (const t of g.tags) {
+        const openEl = output.querySelector(`.unclosed-open-anchor[data-uid="${t.__uid}"]`);
+        if (!openEl) continue;
+        const tagRect = openEl.getBoundingClientRect();
+        if (!isRectVisible(tagRect)) continue;
+
+        const tagText = isMindboxConstruct(t.tagName) ? mindboxOpenLabel(t.tagName) : `<${t.tagName}>`;
+        const popup = buildPopupShell(
+          "Удалить?",
+          `Удалить ${tagText} из результата`,
+          () => acceptTagDeletion(t, g),
+          () => rejectTagDeletion(t, g),
+        );
+        appendPairInfo(popup, pairedRowForOpenSide(t), pairLabelFor(t, true));
+        outputPopups.appendChild(popup);
+        entries.push({ el: popup, placementRects: [tagRect], tagRects: [tagRect] });
+      }
     }
     positionSuggestPopups(entries, wrapRect);
   }

@@ -40,10 +40,33 @@
     if (mod10 >= 2 && mod10 <= 4) return "конструкции";
     return "конструкций";
   }
-  function unclosedConstructAdjective(n) {
+  // Общее для любого существительного женского рода, требующего формы
+  // "-ая"/"-ых" (сейчас — "конструкция" и "кавычка", см. вызовы ниже) —
+  // само прилагательное склоняется одинаково независимо от конкретного
+  // существительного, только числительное+существительное у каждого свои.
+  function unclosedFeminineAdjective(n) {
     const mod10 = n % 10;
     const mod100 = n % 100;
     return mod10 === 1 && mod100 !== 11 ? "незакрытая" : "незакрытых";
+  }
+  // Зеркало unclosedFeminineAdjective для "неоткрытая"/"неоткрытых" (см.
+  // QuoteIssue в src/formatter.ts — "unopened": кавычка затесалась внутрь
+  // значения БЕЗ открывающей пары).
+  function unopenedFeminineAdjective(n) {
+    const mod10 = n % 10;
+    const mod100 = n % 100;
+    return mod10 === 1 && mod100 !== 11 ? "неоткрытая" : "неоткрытых";
+  }
+  // Согласование числительного со словом "кавычка" (1 кавычка, 2 кавычки,
+  // 5 кавычек, 11 кавычек, 21 кавычка, ...) — для плашки "Возможно: N
+  // незакрытых кавычек..." (см. updateQuoteIssuesStatus).
+  function pluralizeQuote(n) {
+    const mod10 = n % 10;
+    const mod100 = n % 100;
+    if (mod100 >= 11 && mod100 <= 14) return "кавычек";
+    if (mod10 === 1) return "кавычка";
+    if (mod10 >= 2 && mod10 <= 4) return "кавычки";
+    return "кавычек";
   }
 
   // Сводка справа от заголовка "Результат": сколько тегов сейчас реально
@@ -61,30 +84,35 @@
   // так и остались, мы просто перестали про них напоминать. Показываем
   // это отдельным красным сообщением, а не зелёным "сбалансированы".
   //
-  // workingTags — список диагностики незакрытых тегов/конструкций (kind
-  // всегда "unclosed", см. applyFormatResult) — считаем раздельно для
-  // HTML-тегов и Mindbox-конструкций ("N незакрытых, M незакрытых
-  // конструкций"), а не одной обезличенной суммой: конкретика важнее
-  // краткости.
+  // workingTags — теперь список ГРУПП (см. UnclosedTagGroup в
+  // src/formatter.ts), каждая с одним или несколькими тегами внутри (kind
+  // на самой группе всегда "unclosed", см. applyFormatResult) — считаем
+  // раздельно для HTML-тегов и Mindbox-конструкций ("N незакрытых, M
+  // незакрытых конструкций"), а не одной обезличенной суммой: конкретика
+  // важнее краткости. Счёт — в ТЕГАХ (см. flatWorkingTags), а не группах:
+  // totalFlaggedCount/rejectedCount тоже считаются в тегах (см.
+  // applyFormatResult/rejectGroupSuggestion/rejectTagDeletion), единицы
+  // должны совпадать, иначе allRejected ниже никогда не сойдётся.
+  function flatWorkingTags() {
+    const flat = [];
+    for (const g of workingTags) for (const t of g.tags) flat.push(t);
+    return flat;
+  }
   function updateOutputStatus() {
     if (!checkUnclosedTags.checked || outputEditedManually) {
       outputStatus.textContent = "";
       outputStatus.className = "status-plate";
       return;
     }
-    const openCount = workingTags.length;
+    const flatTags = flatWorkingTags();
+    const openCount = flatTags.length;
     // unclosed делится на две грамматически разные подкатегории — обычные
     // HTML-теги ("N незакрытых тегов") и Mindbox-конструкции @{for ...}/
     // @{if ...} ("N незакрытых конструкций", см. isMindboxConstruct) —
-    // само число проблемных мест (workingTags.length) и вся механика
-    // принятия/отклонения при этом не меняются вовсе, различается только
-    // формулировка сводки.
-    const unclosedTagCount = workingTags.filter(
-      (e) => e.kind === "unclosed" && !isMindboxConstruct(e.tagName),
-    ).length;
-    const unclosedConstructCount = workingTags.filter(
-      (e) => e.kind === "unclosed" && isMindboxConstruct(e.tagName),
-    ).length;
+    // само число проблемных мест и вся механика принятия/отклонения при
+    // этом не меняются вовсе, различается только формулировка сводки.
+    const unclosedTagCount = flatTags.filter((t) => !isMindboxConstruct(t.tagName)).length;
+    const unclosedConstructCount = flatTags.filter((t) => isMindboxConstruct(t.tagName)).length;
     const allRejected =
       openCount === 0 && rejectedCount > 0 && rejectedCount === totalFlaggedCount;
     let text;
@@ -96,7 +124,7 @@
       }
       if (unclosedConstructCount > 0) {
         clauses.push(
-          `${unclosedConstructCount} ${unclosedConstructAdjective(unclosedConstructCount)} ${pluralizeConstruct(unclosedConstructCount)}`,
+          `${unclosedConstructCount} ${unclosedFeminineAdjective(unclosedConstructCount)} ${pluralizeConstruct(unclosedConstructCount)}`,
         );
       }
       text = `Возможно: ${clauses.join(", ")}`;
@@ -124,22 +152,40 @@
     if (openCount > 0) outputStatus.appendChild(buildTagFlagList());
   }
 
-  // Группирует lastOpenFlags по имени тега — [{ tagName, rows }], rows в
-  // порядке появления в документе (тот же порядок, что и у lastOpenFlags
-  // самого, см. buildDisplayHtml/workingTags).
+  // Группирует lastOpenFlags — обычные (не входящие ни в цепочку, ни в
+  // outlook-обёртку) теги по имени, как и раньше ("table: 12, 44, ...") —
+  // группы из НЕСКОЛЬКИХ вложенных тегов (f.groupSpecial, см.
+  // unclosedGroupLabel/buildDisplayHtml в diagnostics-view.js) получают
+  // ОДНУ общую запись на всю группу с готовой подписью (f.groupLabel —
+  // либо "<первый>...<последний>", либо "Outlook-комментарий", см. запрос
+  // пользователя) вместо обычного имени тега, а её строки — это строки
+  // ОТКРЫТИЯ каждого тега группы по порядку. Порядок записей в списке —
+  // порядок первого появления в документе (тот же порядок, что и у
+  // lastOpenFlags самого, см. buildDisplayHtml/workingTags).
   function buildTagFlagList() {
-    const byTag = new Map();
+    const entries = [];
+    const byKey = new Map();
     for (const f of lastOpenFlags) {
-      if (!byTag.has(f.tagName)) byTag.set(f.tagName, []);
-      byTag.get(f.tagName).push(f.row);
+      const key = f.groupSpecial ? "group:" + f.groupUid : "tag:" + f.tagName;
+      let entry = byKey.get(key);
+      if (!entry) {
+        const label = f.groupSpecial
+          ? f.groupLabel
+          : isMindboxConstruct(f.tagName)
+            ? mindboxOpenLabel(f.tagName)
+            : `<${f.tagName}>`;
+        entry = { label, rows: [] };
+        byKey.set(key, entry);
+        entries.push(entry);
+      }
+      entry.rows.push(f.row);
     }
     const list = document.createElement("ul");
     list.className = "empty-attrs-list";
-    for (const [tagName, rows] of byTag) {
+    for (const entry of entries) {
       const li = document.createElement("li");
-      const label = isMindboxConstruct(tagName) ? mindboxOpenLabel(tagName) : `<${tagName}>`;
-      li.appendChild(document.createTextNode(`${label}: `));
-      rows.forEach((row, i) => {
+      li.appendChild(document.createTextNode(`${entry.label}: `));
+      entry.rows.forEach((row, i) => {
         if (i > 0) li.appendChild(document.createTextNode(", "));
         const link = document.createElement("span");
         link.className = "empty-attrs-line-link";
@@ -150,6 +196,74 @@
       list.appendChild(li);
     }
     return list;
+  }
+
+  // Плашка "Возможно: N незакрытых кавычек, M неоткрытых кавычек:" (см.
+  // QuoteIssue/findQuoteIssues в src/formatter.ts) — часть той же
+  // проверки "Проверить целостность тегов" (тот же чекбокс, что и у
+  // outputStatus/workingTags), но чисто информационная: в отличие от
+  // незакрытых тегов, тут нет ни попапа, ни возможности принять/
+  // отклонить конкретное вхождение — кавычка уже не может сломать
+  // структуру дерева/тегов (см. justSawEquals в src/parser.ts), только
+  // предупреждаем о подозрительном месте. lastUnclosedQuoteAttrs/
+  // lastUnopenedQuoteAttrs обновляются в applyFormatResult, те же
+  // правила показа/молчания (выключенный чекбокс или ручная правка
+  // вывода — молчим), что и у остальных сводок.
+  function updateQuoteIssuesStatus() {
+    const active = checkUnclosedTags.checked && !outputEditedManually;
+    const unclosed = active ? lastUnclosedQuoteAttrs : [];
+    const unopened = active ? lastUnopenedQuoteAttrs : [];
+    const unclosedCount = unclosed.reduce((sum, g) => sum + g.locations.length, 0);
+    const unopenedCount = unopened.reduce((sum, g) => sum + g.locations.length, 0);
+    if (unclosedCount === 0 && unopenedCount === 0) {
+      quoteIssuesStatus.textContent = "";
+      quoteIssuesStatus.className = "status-plate";
+      return;
+    }
+    const clauses = [];
+    if (unclosedCount > 0) {
+      clauses.push(
+        `${unclosedCount} ${unclosedFeminineAdjective(unclosedCount)} ${pluralizeQuote(unclosedCount)}`,
+      );
+    }
+    if (unopenedCount > 0) {
+      clauses.push(
+        `${unopenedCount} ${unopenedFeminineAdjective(unopenedCount)} ${pluralizeQuote(unopenedCount)}`,
+      );
+    }
+    quoteIssuesStatus.innerHTML = "";
+    quoteIssuesStatus.className = "status-plate status-alert";
+    const titleEl = document.createElement("div");
+    titleEl.className = "empty-attrs-title";
+    titleEl.textContent = `Возможно: ${clauses.join(", ")}`;
+    quoteIssuesStatus.appendChild(titleEl);
+    const list = document.createElement("ul");
+    list.className = "empty-attrs-list";
+    for (const group of [...unclosed, ...unopened]) {
+      const li = document.createElement("li");
+      li.appendChild(document.createTextNode(`${group.attrName}: `));
+      group.locations.forEach(({ line }, i) => {
+        if (i > 0) li.appendChild(document.createTextNode(", "));
+        const link = document.createElement("span");
+        link.className = "empty-attrs-line-link";
+        link.textContent = String(line + 1);
+        link.addEventListener("click", () => handleQuoteIssueLineClick(line));
+        li.appendChild(link);
+      });
+      list.appendChild(li);
+    }
+    quoteIssuesStatus.appendChild(list);
+  }
+
+  // Клик по номеру строки в плашке кавычек — просто скроллит к ней. В
+  // отличие от handleEmptyAttrLineClick (пустые атрибуты) мигать нечем:
+  // надёжно найти в подсветке именно ТУ подстроку, что стала значением
+  // атрибута из-за пропавшей кавычки, нельзя — четкой границы для неё в
+  // разметке часто просто нет.
+  function handleQuoteIssueLineClick(line) {
+    const row = lastOrigToFinalRow[line];
+    if (row === undefined) return;
+    scrollRowIntoView(row);
   }
 
   // Общий рендер плашки "Пустые атрибуты (...):" — используется и для
@@ -228,8 +342,8 @@
     el.appendChild(list);
   }
 
-  // Плашка "Удалены (не влияет на вёрстку):" — что убрала "Очистка от
-  // служебных атрибутов" (class="esd-text", <tbody>, см.
+  // Плашка "Очищено (не влияет на вёрстку):" — что поменяла "Очистка
+  // лишнего кода" (class="esd-text", <tbody>, &#39; → апостроф, см.
   // removedServiceItems/src/serviceCleanup.ts). Выключенный чекбокс или
   // ручная правка вывода — молчим, как и остальные сводки; если чекбокс
   // включён, но убирать было нечего — тоже молчим (пользователь просил
@@ -239,7 +353,7 @@
     renderCountPlate(
       serviceCleanupStatus,
       active ? lastRemovedServiceItems : [],
-      "Удалены (не влияет на вёрстку):",
+      "Очищено (не влияет на вёрстку):",
       "status-muted",
     );
   }
@@ -372,6 +486,133 @@
     }
     for (const child of output.childNodes) visit(child);
     return index;
+  }
+
+  // Индекс "номер строки -> имя атрибута (нижний регистр) -> [{attrEl,
+  // valEl}, ...]" для ВСЕХ атрибутов на строке (не только пустых, как у
+  // buildEmptyAttrDomIndex выше) — нужен applyQuoteIssueHighlights, чтобы
+  // найти ровно тот атрибут по имени, на который указывает диагностика
+  // кавычек (см. QuoteIssue в src/formatter.ts). МАССИВ, а не одна
+  // запись — несколько простых инлайн-тегов подряд (например, два <a>
+  // только с текстом внутри) сворачиваются в ОДНУ строку вывода (см.
+  // isFlowNode в src/formatter.ts), так что один и тот же атрибут (тот же
+  // "href") на одной строке вполне может встретиться больше одного раза.
+  function buildAttrDomIndexByRow() {
+    const index = new Map();
+    let row = 0;
+    function visit(node) {
+      if (node.nodeType === Node.TEXT_NODE) {
+        for (const ch of node.textContent) if (ch === "\n") row++;
+        return;
+      }
+      if (node.nodeType !== Node.ELEMENT_NODE) return;
+      if (node.classList.contains("tok-attr")) {
+        const valEl = node.nextElementSibling;
+        if (!index.has(row)) index.set(row, new Map());
+        const byAttr = index.get(row);
+        const key = node.textContent.toLowerCase();
+        const entry = { attrEl: node, valEl: valEl && valEl.classList.contains("tok-val") ? valEl : null };
+        if (byAttr.has(key)) byAttr.get(key).push(entry);
+        else byAttr.set(key, [entry]);
+      }
+      for (const child of node.childNodes) visit(child);
+    }
+    for (const child of output.childNodes) visit(child);
+    return index;
+  }
+
+  // Оборачивает РОВНО ОДИН символ-кавычку внутри значения атрибута в
+  // отдельный <span class="quote-issue-mark"> — не всё значение целиком
+  // (см. запрос пользователя: подсветить "атрибут... и одну существующую
+  // кавычку", а не всё значение и не место вставки). mode:
+  // - "opening" — незакрытая (QuoteIssue.kind "unclosed"): значение само
+  //   НАЧИНАЕТСЯ с настоящей открывающей кавычки (иначе оно не попало бы
+  //   в эту категорию, см. findQuoteIssues) — берём именно её, самый
+  //   первый символ.
+  // - "stray" — неоткрытая ("unopened"): кавычки в начале нет (значение
+  //   без кавычек по правилам HTML), но где-то внутри затесалась одна
+  //   лишняя — берём первую попавшуюся.
+  function wrapQuoteCharAt(el, idx) {
+    const text = el.textContent;
+    const before = text.slice(0, idx);
+    const quoteChar = text[idx];
+    const after = text.slice(idx + 1);
+    el.textContent = "";
+    if (before) el.appendChild(document.createTextNode(before));
+    const mark = document.createElement("span");
+    // Зелёный (см. .quote-issue-found-mark в CSS), а не красный, как у
+    // имени атрибута: сама кавычка реально есть в коде и стоит правильно —
+    // мы никогда не рисуем кавычку, которой нет, только отмечаем уже
+    // существующую (см. запрос пользователя).
+    mark.className = "quote-issue-found-mark";
+    mark.textContent = quoteChar;
+    el.appendChild(mark);
+    if (after) el.appendChild(document.createTextNode(after));
+  }
+
+  function markOneQuoteChar(valEl, mode) {
+    if (mode === "opening") {
+      // Незакрытая — сама кавычка всегда буквально первый символ значения
+      // (findQuoteIssues заходит в ветку "unclosed" только когда значение
+      // НАЧАЛОСЬ с настоящей кавычки сразу после "=").
+      if (/^["']/.test(valEl.textContent)) wrapQuoteCharAt(valEl, 0);
+      return;
+    }
+    // "stray" (неоткрытая) — потерявшее кавычки значение может занимать
+    // НЕСКОЛЬКО "слов" (см. NEXT_ATTR_START_RE в src/formatter.ts), а сама
+    // подсветка синтаксиса токенизирует его тем же наивным способом (по
+    // пробелам), так что затесавшаяся кавычка нередко попадает не в
+    // непосредственный .tok-val, а в один из следующих псевдо-атрибутных
+    // .tok-attr рядом. Идём по соседям, пока не упрёмся в границу тега
+    // (.tok-tag) — findQuoteIssues уже гарантирует, что настоящий
+    // следующий атрибут раньше найденной кавычки не встретится, иначе
+    // диагностика вообще не сработала бы.
+    let el = valEl;
+    while (el && (el.classList.contains("tok-val") || el.classList.contains("tok-attr"))) {
+      const idx = el.textContent.search(/["']/);
+      if (idx !== -1) {
+        wrapQuoteCharAt(el, idx);
+        return;
+      }
+      el = el.nextElementSibling;
+    }
+  }
+
+  // Подсказка "проверьте кавычку" прямо в подсветке #output (см.
+  // QuoteIssue/findQuoteIssues в src/formatter.ts) — без попапа и без
+  // предложенного места вставки (осознанное решение — слишком много
+  // тонкостей, где именно должна была быть кавычка), просто фоновая
+  // подсветка (см. .quote-issue-mark в CSS — НЕ перекрашивает сам текст,
+  // золотой .tok-attr и голубой .tok-val остаются как есть) на имени
+  // атрибута и на одной уже существующей кавычке. Те же условия показа/
+  // молчания, что и у updateQuoteIssuesStatus (та же диагностика).
+  function applyQuoteIssueHighlights() {
+    const active = checkUnclosedTags.checked && !outputEditedManually;
+    if (!active) return;
+    if (lastUnclosedQuoteAttrs.length === 0 && lastUnopenedQuoteAttrs.length === 0) return;
+    const index = buildAttrDomIndexByRow();
+    // occurrence (см. QuoteIssueLocation в src/formatter.ts) — порядковый
+    // номер (1-based) этого имени атрибута СРЕДИ ВСЕХ узлов на строке,
+    // посчитанный на бэкенде теми же правилами обхода документа, что и
+    // порядок появления в DOM здесь — так что entries[occurrence-1]
+    // указывает ровно на нужное вхождение, даже если на строке вперемешку
+    // есть и валидные, и сломанные вхождения одного и того же имени.
+    const apply = (groups, mode) => {
+      for (const group of groups) {
+        for (const { line, occurrence } of group.locations) {
+          const row = lastOrigToFinalRow[line];
+          if (row === undefined) continue;
+          const entries = index.get(row)?.get(group.attrName);
+          if (!entries) continue;
+          const entry = entries[occurrence - 1];
+          if (!entry) continue;
+          entry.attrEl.classList.add("quote-issue-mark");
+          if (entry.valEl) markOneQuoteChar(entry.valEl, mode);
+        }
+      }
+    };
+    apply(lastUnclosedQuoteAttrs, "opening");
+    apply(lastUnopenedQuoteAttrs, "stray");
   }
 
   // Клик по номеру строки в плашке "Пустые атрибуты" (см.

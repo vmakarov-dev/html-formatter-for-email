@@ -378,6 +378,29 @@ test("типограф: предлог 'от' не отрывается от с�
   assert.equal(out, "<p>Видеоурок от&nbsp;носителей языка.</p>");
 });
 
+test("типограф: предлог 'со' не отрывается от следующего слова", () => {
+  const input = `<p>Дружим со словарём каждый день.</p>`;
+  const out = formatHtml(input);
+  assert.equal(out, "<p>Дружим со&nbsp;словарём каждый день.</p>");
+});
+
+test("типограф: предлог — последнее слово текстового узла перед соседним инлайн-тегом — всё равно приклеивается неразрывным пробелом", () => {
+  // Реальный случай: "Не путать с <b>catnip</b>" — предлог "с" физически
+  // последнее слово ИМЕННО этого текстового узла (дальше идёт <b>), обычный
+  // PREPOSITION_RE такое не ловит (ему нужен непробельный символ ПОСЛЕ
+  // пробела в той же строке) — см. glueTrailingClingingWordBeforeInline в
+  // typograf.ts.
+  const input = `<p>Не путать с <b>catnip</b>.</p>`;
+  const out = formatHtml(input);
+  assert.equal(out, "<p>Не&nbsp;путать с&nbsp;<b>catnip</b>.</p>");
+});
+
+test("регрессия: предлог в конце текстового узла НЕ приклеивается, если следующий сосед — блочный тег, а не инлайн (это конец фразы, а не разрыв)", () => {
+  const input = `<div>Смотри в</div><div>следующий блок.</div>`;
+  const out = formatHtml(input);
+  assert.equal(out, "<div>Смотри в</div>\n<div>следующий блок.</div>");
+});
+
 test("типограф: typografy: false отключает преобразование текста", () => {
   const input = `<p>Он сказал "привет" А. С. Пушкину - и ушел в дом.</p>`;
   const out = formatHtml(input, { typografy: false });
@@ -388,6 +411,18 @@ test("типограф (английский): короткие слова пр�
   const input = `<p>I am a big fan of the new update.</p>`;
   const out = formatHtml(input);
   assert.equal(out, "<p>I&nbsp;am a&nbsp;big fan of&nbsp;the&nbsp;new update.</p>");
+});
+
+test("типограф (английский): 'for' приклеивается к следующему слову", () => {
+  const input = `<p>This works for half a year.</p>`;
+  const out = formatHtml(input);
+  assert.equal(out, "<p>This works for&nbsp;half a&nbsp;year.</p>");
+});
+
+test("типограф (английский): короткое слово — последнее в текстовом узле перед соседним инлайн-тегом — тоже приклеивается", () => {
+  const input = `<p>This works for <b>half</b> a year.</p>`;
+  const out = formatHtml(input);
+  assert.equal(out, "<p>This works for&nbsp;<b>half</b> a&nbsp;year.</p>");
 });
 
 test("типограф (английский): инициалы и фамилия", () => {
@@ -401,7 +436,7 @@ test("типограф (английский): единицы измерения
   const out = formatHtml(input);
   assert.equal(
     out,
-    "<p>Run 10&nbsp;km in&nbsp;20&nbsp;min for $&nbsp;5, pay 5&nbsp;$ later, open at&nbsp;9&nbsp;a.m., see p.&nbsp;25.</p>",
+    "<p>Run 10&nbsp;km in&nbsp;20&nbsp;min for&nbsp;$&nbsp;5, pay 5&nbsp;$ later, open at&nbsp;9&nbsp;a.m., see p.&nbsp;25.</p>",
   );
 });
 
@@ -587,6 +622,85 @@ test("диагностика незакрытых тегов: MSO-открыти
     { line: 3, tagName: "tr", insertBeforeLine: 7, depth: 3, insertConfidence: "reliable" },
     { line: 4, tagName: "td", insertBeforeLine: 7, depth: 4, insertConfidence: "reliable" },
   ]);
+});
+
+test("группировка незакрытых тегов: цепочка table>tr>td, целиком открытая в незакрытом outlook-комментарии, объединяется в одну группу с предложением обернуть в новую [if mso]-конструкцию", () => {
+  const input = [
+    "<td>",
+    "<!--[if mso]>",
+    "<table><tr><td>",
+    "<![endif]-->",
+    "<p>Not Outlook</p>",
+    "</td>",
+  ].join("\n");
+  const { unclosedTagGroups } = formatHtmlWithDiagnostics(input);
+  assert.equal(unclosedTagGroups.length, 1);
+  const group = unclosedTagGroups[0];
+  assert.deepEqual(
+    group.tags.map((t) => t.tagName),
+    ["table", "tr", "td"],
+  );
+  assert.equal(group.insertBeforeLine, 7);
+  assert.equal(group.insertConfidence, "reliable");
+  assert.equal(group.needsConditionalCommentWrap, true);
+  assert.equal(group.conditionalCommentText, "<!--[if mso]>");
+});
+
+test("группировка незакрытых тегов: обычная (не-outlook) цепочка table>tr>td объединяется в одну группу без обёртки", () => {
+  const input = "<table><tr><td>text</div>";
+  const { unclosedTagGroups } = formatHtmlWithDiagnostics(input, { cleanServiceAttrs: false });
+  assert.equal(unclosedTagGroups.length, 1);
+  const group = unclosedTagGroups[0];
+  assert.deepEqual(
+    group.tags.map((t) => t.tagName),
+    ["table", "tr", "td"],
+  );
+  assert.equal(group.needsConditionalCommentWrap, false);
+  assert.equal(group.conditionalCommentText, null);
+});
+
+test("группировка незакрытых тегов: если точка вставки и так ещё внутри исходного условного комментария — обёртка не нужна", () => {
+  const input = ["<!--[if mso]>", "<span>", "<table><tr><td>text", "</span>", "<![endif]-->"].join("\n");
+  const { unclosedTagGroups } = formatHtmlWithDiagnostics(input, { cleanServiceAttrs: false });
+  assert.equal(unclosedTagGroups.length, 1);
+  assert.equal(unclosedTagGroups[0].needsConditionalCommentWrap, false);
+});
+
+test("группировка незакрытых тегов: два НЕ связанных родством незакрытых тега, случайно вытесненные в одну и ту же точку, НЕ объединяются в одну цепочку", () => {
+  // <b> и <c> — оба прямые дети уже по-настоящему ЗАКРЫТОГО <a> (значит, у
+  // самого <a> нет своей записи в leak-стеке, и parentEntry у b/c — null у
+  // обоих, а не друг у друга) — оба вытесняются одной и той же </a> в одну
+  // и ту же точку вставки, но родства между собой не имеют. Простое
+  // совпадение insertBeforeLine само по себе не должно их объединять — см.
+  // подтверждённое пользователем правило ("цепочка ВЛОЖЕННЫХ предков", а
+  // не "любые совпавшие по точке вставки").
+  const input = ["<a>", "<!--[if mso]><b><![endif]-->", "<!--[if mso]><c><![endif]-->", "</a>"].join("\n");
+  const { unclosedTagGroups } = formatHtmlWithDiagnostics(input, { cleanServiceAttrs: false });
+  assert.equal(unclosedTagGroups.length, 2);
+  assert.deepEqual(
+    unclosedTagGroups.map((g) => g.tags.length),
+    [1, 1],
+  );
+  assert.deepEqual(
+    unclosedTagGroups.map((g) => g.tags[0].tagName),
+    ["b", "c"],
+  );
+});
+
+test("группировка незакрытых тегов: uncertain-запись не считается частью цепочки reliable-соседей, вся группа тоже uncertain", () => {
+  const input = [
+    "<!--[if mso]>",
+    "<a>",
+    "<![endif]-->",
+    "<c>sibling never closed",
+    "<!--[if mso]>",
+    "</a>",
+    "<![endif]-->",
+  ].join("\n");
+  const { unclosedTagGroups } = formatHtmlWithDiagnostics(input);
+  assert.equal(unclosedTagGroups.length, 1);
+  assert.equal(unclosedTagGroups[0].insertConfidence, "uncertain");
+  assert.equal(unclosedTagGroups[0].needsConditionalCommentWrap, false);
 });
 
 test("формат: formatHtml по-прежнему возвращает просто строку (обратная совместимость)", () => {
@@ -1072,6 +1186,157 @@ test("диагностика пустых атрибутов: в норме пу
   assert.deepEqual(emptyAttrsToDelete, []);
 });
 
+test("регрессия: непарная кавычка в href НЕ ломает структуру дерева (реальный случай — 31 ложный 'незакрытый тег' из-за одной опечатки)", () => {
+  // До фикса: наивное отслеживание кавычек (переключение на КАЖДОЙ,
+  // без привязки к "=") принимало следующую случайно попавшуюся кавычку
+  // (та, что должна была закрыть target="_blank") за закрытие href,
+  // расшатывая границу самого тега <a> и утаскивая за собой разбор всего
+  // остального документа. Теперь кавычка открывает "цитируемое" значение
+  // ТОЛЬКО сразу после "=" (см. justSawEquals в src/parser.ts) — граница
+  // тега находится верно, а остаток документа (в том числе <div>after)
+  // разбирается как обычно.
+  const input =
+    '<table><tr><td><a href="https://samolet.ru/flats/kvartaldomashniikorpus3/ target="_blank" style="text-decoration: none; outline: none"><img alt="x" src="y.png"></a></td></tr></table><div>after</div>';
+  const { html, unclosedTags } = formatHtmlWithDiagnostics(input, { cleanServiceAttrs: false });
+  assert.deepEqual(unclosedTags, []);
+  assert.equal(
+    html,
+    [
+      "<table>",
+      "  <tr>",
+      "    <td>",
+      '      <a href="https://samolet.ru/flats/kvartaldomashniikorpus3/ target="_blank" style="text-decoration: none; outline: none"><img alt="x" src="y.png"></a>',
+      "    </td>",
+      "  </tr>",
+      "</table>",
+      "<div>after</div>",
+    ].join("\n"),
+  );
+});
+
+test("регрессия: если непарная кавычка так и не находит вообще никакой пары, предохранитель обрывает разбор тега на границе следующего тега, а не глотает остаток документа", () => {
+  const input = `<div><a href="never closes<span>real content</span></div>`;
+  const { html, unclosedTags } = formatHtmlWithDiagnostics(input, { cleanServiceAttrs: false });
+  assert.equal(
+    html,
+    ['<div>', '  <a href="never closes>', "    <span>real content</span>", "</div>"].join("\n"),
+  );
+  // <a> сам по себе честно остаётся незакрытым (в этом примере у него и
+  // впрямь нет закрывающего тега) — это уже штатная, доверенная
+  // диагностика, а не 31 посторонний ложный тег где-то дальше по письму.
+  assert.equal(unclosedTags.length, 1);
+  assert.equal(unclosedTags[0].tagName, "a");
+});
+
+test("диагностика кавычек: незакрытая (значение начинается с кавычки, но не находит пары — 'проглотило' соседний атрибут)", () => {
+  const input =
+    '<a href="https://samolet.ru/flats/kvartaldomashniikorpus3/ target="_blank">x</a>';
+  const { unclosedQuoteAttrs, unopenedQuoteAttrs } = formatHtmlWithDiagnostics(input, {
+    cleanServiceAttrs: false,
+  });
+  assert.deepEqual(unclosedQuoteAttrs, [{ attrName: "href", locations: [{ line: 0, occurrence: 1 }] }]);
+  assert.deepEqual(unopenedQuoteAttrs, []);
+});
+
+test("диагностика кавычек: неоткрытая (значение без кавычек, но внутри затесалась кавычка — забыли открывающую пару)", () => {
+  const input = `<a href=https://example.com" target="_blank">link</a>`;
+  const { unclosedQuoteAttrs, unopenedQuoteAttrs } = formatHtmlWithDiagnostics(input, {
+    cleanServiceAttrs: false,
+  });
+  assert.deepEqual(unclosedQuoteAttrs, []);
+  assert.deepEqual(unopenedQuoteAttrs, [{ attrName: "href", locations: [{ line: 0, occurrence: 1 }] }]);
+});
+
+test("регрессия: неоткрытая кавычка находится, даже если потерянное значение растянуто на много 'слов' (CSS-подобные декларации через '; ')", () => {
+  // Реальный случай: у атрибута style потеряна открывающая кавычка, а
+  // значение внутри — это несколько CSS-деклараций через "; ", так что
+  // затесавшаяся кавычка обнаруживается только далеко впереди, перед самым
+  // закрытием тега — первое "слово" до пробела ("display:") кавычки не
+  // содержит вовсе. Без NEXT_ATTR_START_RE поиск останавливался на первом
+  // пробеле и такой случай пропускался целиком.
+  const input =
+    '<img src="a.png" style=display: block; height: auto; outline: none; border: 0">';
+  const { unclosedQuoteAttrs, unopenedQuoteAttrs } = formatHtmlWithDiagnostics(input, {
+    cleanServiceAttrs: false,
+  });
+  assert.deepEqual(unclosedQuoteAttrs, []);
+  assert.deepEqual(unopenedQuoteAttrs, [{ attrName: "style", locations: [{ line: 0, occurrence: 1 }] }]);
+});
+
+test("диагностика кавычек: несколько вхождений одного атрибута группируются в один список строк", () => {
+  const input =
+    '<div><a href="a.com/ target="_blank">1</a></div><div><a href="b.com/ target="_blank">2</a></div>';
+  const { unclosedQuoteAttrs } = formatHtmlWithDiagnostics(input, { cleanServiceAttrs: false });
+  assert.deepEqual(unclosedQuoteAttrs, [
+    { attrName: "href", locations: [{ line: 0, occurrence: 1 }, { line: 1, occurrence: 1 }] },
+  ]);
+});
+
+test("регрессия: валидное и сломанное вхождение ОДНОГО И ТОГО ЖЕ имени атрибута на одной строке вывода не путаются между собой (occurrence)", () => {
+  // Реальный случай: два соседних инлайн-тега схлопываются в одну строку
+  // вывода (см. isFlowNode) — у ПЕРВОГО style полностью валиден (обе
+  // кавычки на месте), у ВТОРОГО style потерял открывающую кавычку. Без
+  // occurrence (см. QuoteIssueLocation) фронтенд находил бы в DOM ПЕРВОЕ
+  // попавшееся вхождение "style" на строке — то есть ВАЛИДНОЕ — и ошибочно
+  // подсвечивал бы его вместо настоящего виновника.
+  const input =
+    '<a href="https://ok.com/" style="color:red">one</a>' +
+    '<img src="a.png" style=display: block; border: 0">';
+  const { unclosedQuoteAttrs, unopenedQuoteAttrs } = formatHtmlWithDiagnostics(input, {
+    cleanServiceAttrs: false,
+  });
+  assert.deepEqual(unclosedQuoteAttrs, []);
+  // occurrence: 2 — второе (не первое!) вхождение "style" на строке 0.
+  assert.deepEqual(unopenedQuoteAttrs, [
+    { attrName: "style", locations: [{ line: 0, occurrence: 2 }] },
+  ]);
+});
+
+test("диагностика кавычек: в норме (валидные атрибуты) — пустые списки, ложных срабатываний нет", () => {
+  const input = `<a href="https://example.com" target="_blank" style="color:red">ok</a><img src="a.png" alt="">`;
+  const { unclosedQuoteAttrs, unopenedQuoteAttrs } = formatHtmlWithDiagnostics(input, {
+    cleanServiceAttrs: false,
+  });
+  assert.deepEqual(unclosedQuoteAttrs, []);
+  assert.deepEqual(unopenedQuoteAttrs, []);
+});
+
+test("регрессия: диагностика кавычек не путает легитимное 'слово=значение' ВНУТРИ значения (meta content, реальный случай) с проглоченным соседним атрибутом", () => {
+  // SWALLOWED_ATTR_RE обязан различать "content='text/html; charset=utf-8'"
+  // (после '=' ещё есть настоящее содержимое значения перед закрывающей
+  // кавычкой — это НОРМА, а не опечатка) от "href='...corpus3/ target='"
+  // (после '=' сразу кавычка — она ЧУЖАЯ, украдена у соседнего атрибута).
+  const input =
+    '<meta content="text/html; charset=utf-8" http-equiv="Content-Type">' +
+    '<meta name="viewport" content="width=device-width, initial-scale=1.0">';
+  const { unclosedQuoteAttrs, unopenedQuoteAttrs } = formatHtmlWithDiagnostics(input, {
+    cleanServiceAttrs: false,
+  });
+  assert.deepEqual(unclosedQuoteAttrs, []);
+  assert.deepEqual(unopenedQuoteAttrs, []);
+});
+
+test("регрессия: незакрытая кавычка в атрибуте одного инлайн-тега не ломает перенос строк у соседних инлайн-тегов в том же потоке (collapseFlowWhitespace)", () => {
+  // Тот же класс бага, что уже чинили в parseElement/normalizeAttrsWhitespace
+  // (src/parser.ts) — только на этот раз в отдельной копии похожей логики
+  // подсчёта кавычек внутри collapseFlowWhitespace. Без justSawEquals там
+  // реальный перенос строки МЕЖДУ двумя соседними <a> в потоке ошибочно
+  // считался "внутри тега" (из-за нечётного числа кавычек у первого <a> с
+  // незакрытым href) и просачивался в результат буквально, вместо того
+  // чтобы схлопнуться в пробел — оба <a> оказывались на одной строке
+  // вывода, но с сырым "\n" внутри неё.
+  const input =
+    '<a href="https://samolet.ru/flats/x/ target="_blank">one</a>\n' +
+    '<a href="https://example.com/">two</a>';
+  const { html, unclosedQuoteAttrs } = formatHtmlWithDiagnostics(input, { cleanServiceAttrs: false });
+  assert.equal(html.includes("\n"), false);
+  assert.equal(
+    html,
+    '<a href="https://samolet.ru/flats/x/ target="_blank">one</a> <a href="https://example.com/">two</a>',
+  );
+  assert.deepEqual(unclosedQuoteAttrs, [{ attrName: "href", locations: [{ line: 0, occurrence: 1 }] }]);
+});
+
 test("регрессия: вырезанный <table> в многоуровневой вложенности таблиц не ломает вложенность всего документа (matchesAncestorClose не хватает table-предка)", () => {
   // Тот же класс бага, что и раньше был у <tr> (см. соседний тест про
   // repeatable-предка), только теперь для <table>: вложенные таблицы —
@@ -1246,6 +1511,24 @@ test("подсчёт очистки служебных атрибутов: class
     html,
     ["<table>", "  <tr>", '    <td class="foo">', "      x", "    </td>", "  </tr>", "</table>"].join("\n"),
   );
+});
+
+test("очистка служебного кода: &#39; заменяется на апостроф и в тексте, и в двойных кавычках атрибута", () => {
+  const input =
+    '<td style="font-family: Arial,&#39;Helvetica Neue&#39;,Helvetica">It&#39;s here</td>';
+  const { html, removedServiceItems } = formatHtmlWithDiagnostics(input, { typografy: false });
+  assert.equal(
+    html,
+    ['<td style="font-family: Arial,\'Helvetica Neue\',Helvetica">', "  It's here", "</td>"].join("\n"),
+  );
+  assert.deepEqual(removedServiceItems, [{ label: "&#39; заменено на апостроф", count: 3 }]);
+});
+
+test("регрессия: &#39; НЕ заменяется внутри значения атрибута в ОДИНАРНЫХ кавычках (буквальный апостроф сломал бы границу значения)", () => {
+  const input = `<div title='dont&#39;t touch'><span>x</span></div>`;
+  const { html, removedServiceItems } = formatHtmlWithDiagnostics(input, { typografy: false });
+  assert.equal(html, `<div title='dont&#39;t touch'><span>x</span></div>`);
+  assert.deepEqual(removedServiceItems, []);
 });
 
 test("подсчёт очистки служебных атрибутов: выключенная опция cleanServiceAttrs — пустой список", () => {

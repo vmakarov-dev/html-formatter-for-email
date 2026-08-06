@@ -69,7 +69,7 @@ const NOT_WORD_AFTER = "(?![\\p{L}\\p{N}])";
 // PARTICLES ниже (те, наоборот, липнут к ПРЕДЫДУЩЕМУ слову).
 const PREPOSITIONS = [
   "в", "к", "с", "о", "у", "а", "и", "я",
-  "до", "по", "из", "за", "на", "но", "не", "от", "что", "как", "для",
+  "до", "по", "из", "за", "на", "но", "не", "от", "со", "что", "как", "для",
   "при", "про", "над", "под", "без", "или",
 ];
 
@@ -88,6 +88,18 @@ const PREPOSITION_RE = new RegExp(
 const PARTICLE_RE = new RegExp(
   `(?<=[\\p{L}\\p{N}])[ \\t]+(${PARTICLES.slice().sort(byLengthDesc).join("|")})${NOT_WORD_AFTER}`,
   "giu",
+);
+
+// Тот же предлог, что и PREPOSITION_RE, но у САМОГО КОНЦА строки — см.
+// glueTrailingClingingWordBeforeInline ниже: обычный PREPOSITION_RE требует
+// "дальше есть непробельный символ" (?=\S) В ЭТОЙ ЖЕ строке, а значит не
+// видит случай, когда предлог — последнее слово текстового узла, а
+// "следующее слово" на самом деле лежит уже в соседнем инлайн-теге
+// (например, "Не путать с <b>catnip</b>" — "с" технически последнее слово
+// текстового узла).
+const TRAILING_PREPOSITION_RE = new RegExp(
+  `${NOT_WORD_BEFORE}(${PREPOSITIONS.slice().sort(byLengthDesc).join("|")})[ \\t]+$`,
+  "iu",
 );
 
 // 3. Инициалы и фамилии: "А. С. Пушкин" / "А.С. Пушкин" и обратный
@@ -289,7 +301,7 @@ const EN_NOT_WORD_BEFORE = NOT_WORD_BEFORE;
 const EN_NOT_WORD_AFTER = NOT_WORD_AFTER;
 
 // 1. Короткие слова — не отрываются от следующего слова.
-const EN_SHORT_WORDS = ["a", "an", "the", "to", "of", "in", "on", "at", "by", "or", "is"];
+const EN_SHORT_WORDS = ["a", "an", "the", "to", "of", "in", "on", "at", "by", "or", "is", "for"];
 const EN_SHORT_WORD_RE = new RegExp(
   `${EN_NOT_WORD_BEFORE}(${EN_SHORT_WORDS.slice().sort(byLengthDesc).join("|")})${EN_NOT_WORD_AFTER}[ \\t]+(?=\\S)`,
   "giu",
@@ -298,6 +310,14 @@ const EN_SHORT_WORD_RE = new RegExp(
 // отличие от остальных коротких слов): строчная "i" почти всегда часть
 // другого слова, а не самостоятельное местоимение.
 const EN_I_RE = new RegExp(`${EN_NOT_WORD_BEFORE}(I)${EN_NOT_WORD_AFTER}[ \\t]+(?=\\S)`, "gu");
+
+// Английский аналог TRAILING_PREPOSITION_RE — см. её комментарий выше и
+// glueTrailingClingingWordBeforeInline ниже.
+const EN_TRAILING_SHORT_WORD_RE = new RegExp(
+  `${EN_NOT_WORD_BEFORE}(${EN_SHORT_WORDS.slice().sort(byLengthDesc).join("|")})[ \\t]+$`,
+  "iu",
+);
+const EN_TRAILING_I_RE = new RegExp(`${EN_NOT_WORD_BEFORE}(I)[ \\t]+$`, "u");
 
 function applyEnShortWords(text: string, stats: TypografStats): string {
   return text
@@ -517,4 +537,33 @@ export function applyTypography(text: string, stats: TypografStats): string {
     result = applyWithInterpolationGuard(result, stats, applyTypographyToPlainTextEn);
   }
   return result;
+}
+
+// Вызывается ОТДЕЛЬНО от applyTypography, только когда следующий сосед
+// текстового узла в дереве — инлайн-тег (см. isInlineNeighbor/
+// applyTypographyToTree в formatter.ts): значит, текст "продолжается" за
+// границей узла (например, "Не путать с <b>catnip</b>" — предлог "с" в
+// конце ЭТОГО узла, а следующее слово "catnip" уже внутри <b>). Обычный
+// applyTypography такой предлог не находит — PREPOSITION_RE требует
+// непробельный символ ПОСЛЕ пробела В ТОЙ ЖЕ строке (см. её комментарий),
+// а тут строка на этом и заканчивается. Отдельная функция, а не встраивание
+// в applyTypography — та работает с ОДНИМ изолированным текстом и ничего
+// не знает про соседние узлы дерева, спускать это в неё means протаскивать
+// контекст DOM-дерева туда, где сейчас его нет.
+export function glueTrailingClingingWordBeforeInline(text: string, stats: TypografStats): string {
+  if (CYRILLIC_RE.test(text)) {
+    const m = TRAILING_PREPOSITION_RE.exec(text);
+    if (m) {
+      stats.nbsp++;
+      return text.slice(0, m.index) + m[1] + NBSP;
+    }
+  }
+  if (LATIN_RE.test(text)) {
+    const m = EN_TRAILING_SHORT_WORD_RE.exec(text) ?? EN_TRAILING_I_RE.exec(text);
+    if (m) {
+      stats.nbsp++;
+      return text.slice(0, m.index) + m[1] + NBSP;
+    }
+  }
+  return text;
 }

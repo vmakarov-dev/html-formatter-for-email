@@ -10,6 +10,7 @@
   const lockedTooltip = document.getElementById("lockedTooltip");
   const popupConnectors = document.getElementById("popupConnectors");
   const outputStatus = document.getElementById("outputStatus");
+  const quoteIssuesStatus = document.getElementById("quoteIssuesStatus");
   const emptyAttrsFillStatus = document.getElementById("emptyAttrsFillStatus");
   const emptyAttrsDeleteStatus = document.getElementById("emptyAttrsDeleteStatus");
   const serviceCleanupStatus = document.getElementById("serviceCleanupStatus");
@@ -21,6 +22,7 @@
   const status = document.getElementById("status");
   const formatBtn = document.getElementById("formatBtn");
   const copyBtn = document.getElementById("copyBtn");
+  const formatResultBtn = document.getElementById("formatResultBtn");
   const compressModerateBtn = document.getElementById("compressModerateBtn");
   const compressMaxBtn = document.getElementById("compressMaxBtn");
   const compressSizeModerate = document.getElementById("compressSizeModerate");
@@ -105,6 +107,12 @@
   // updateEmptyAttrsStatus.
   let lastEmptyAttrsFill = [];
   let lastEmptyAttrsDelete = [];
+  // Одиночные (без пары) кавычки внутри значений атрибутов (см.
+  // QuoteIssue/findQuoteIssues в src/formatter.ts) — та же форма и те же
+  // правила обновления, что и у lastEmptyAttrsFill/Delete выше. См.
+  // updateQuoteIssuesStatus.
+  let lastUnclosedQuoteAttrs = [];
+  let lastUnopenedQuoteAttrs = [];
   // Сводки "что удалила очистка служебных атрибутов" / "что поменял
   // типограф" (см. removedServiceItems/typografyItems в
   // src/formatter.ts) — [{ label, count }], уже без нулевых пунктов.

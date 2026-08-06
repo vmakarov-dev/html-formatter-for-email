@@ -1,7 +1,7 @@
 import { parseHtml, normalizeAttrsWhitespace } from "./parser.js";
 import { formatCss } from "./cssFormatter.js";
 import { isNeverCollapseElement } from "./htmlTags.js";
-import { applyTypography, TypografStats } from "./typograf.js";
+import { applyTypography, glueTrailingClingingWordBeforeInline, TypografStats } from "./typograf.js";
 import { applyServiceCleanup, ServiceCleanupStats } from "./serviceCleanup.js";
 import { ElementNode, Node } from "./types.js";
 
@@ -122,6 +122,151 @@ function findEmptyAttrNames(attrsRaw: string): string[] {
   return found;
 }
 
+// Одиночная (без пары) кавычка внутри значения атрибута — уже НЕ может
+// сломать структуру дерева (см. justSawEquals в parser.ts — кавычка
+// открывает "цитируемое" значение только сразу после "="), но почти
+// всегда значит настоящую опечатку в исходнике, о которой стоит честно
+// предупредить (без попапа с предложением что-то поменять — см. запрос
+// пользователя, только информационно). Тот же посимвольный принцип
+// разбора, что и у findEmptyAttrNames выше, но с двумя категориями:
+// - "unclosed" (незакрытая) — значение НАЧАЛОСЬ с кавычки (сразу после
+//   "="), но её пара либо вовсе не нашлась до конца attrsRaw, либо
+//   найденное "значение" похоже на то, что проглотило целиком следующий
+//   атрибут (см. SWALLOWED_ATTR_RE) — реальный случай: забыли закрыть
+//   href, и всё до случайно подвернувшейся кавычки уже ИЗ СЛЕДУЮЩЕГО
+//   атрибута стало частью его значения.
+// - "unopened" (неоткрытая) — значение НЕ начиналось с кавычки (значит,
+//   по правилам HTML это значение без кавычек, читается до первого
+//   пробела), но внутри всё равно затесалась кавычка — где-то забыли
+//   поставить открывающую пару перед тем, что должно было её закрыть.
+//
+// SWALLOWED_ATTR_RE намеренно заякорен на КОНЕЦ значения ("$"), а не на
+// "где угодно внутри" — иначе ложно срабатывал на совершенно легитимные
+// значения вида content="text/html; charset=utf-8" или
+// content="width=device-width, initial-scale=1.0" (обычные meta-теги,
+// реальный случай, пойманный на живом письме): у них "слово=" тоже
+// встречается внутри, но за ним идёт ЕЩЁ содержимое значения перед
+// настоящей закрывающей кавычкой. А вот у по-настоящему проглоченного
+// атрибута ничего, кроме "слово=", после этого уже нет — кавычка, что
+// нас остановила, и есть открывающая кавычка украденного соседа.
+const SWALLOWED_ATTR_RE = /\s[a-zA-Z][a-zA-Z0-9:_-]*=$/;
+
+// Ищет начало СЛЕДУЮЩЕГО настоящего атрибута (имя сразу за пробелом,
+// сразу с "=" и сразу настоящей кавычкой) — используется, чтобы понять,
+// где именно заканчивается "потерявшее открывающую кавычку" значение
+// текущего атрибута (см. поиск "unopened" ниже). Без этой границы поиск
+// одиночной кавычки останавливался на первом же пробеле (как того требуют
+// правила HTML для значений без кавычек) — и пропускал случаи вроде
+// `style=display: block; ...; border: 0">`, где потерянное значение
+// состоит из МНОГИХ слов (CSS-подобных деклараций через "; "), а
+// затесавшаяся кавычка обнаруживается только далеко впереди, перед самым
+// закрытием тега.
+const NEXT_ATTR_START_RE = /\s[a-zA-Z][a-zA-Z0-9:_-]*=["']/;
+
+export interface QuoteIssue {
+  attrName: string;
+  kind: "unclosed" | "unopened";
+}
+
+function findQuoteIssues(attrsRaw: string): QuoteIssue[] {
+  const found: QuoteIssue[] = [];
+  const isSpace = (c: string) => /\s/.test(c);
+  const isNameChar = (c: string) => /[a-zA-Z0-9:_-]/.test(c);
+  let i = 0;
+  while (i < attrsRaw.length) {
+    while (i < attrsRaw.length && isSpace(attrsRaw[i])) i++;
+    const nameStart = i;
+    while (i < attrsRaw.length && isNameChar(attrsRaw[i])) i++;
+    const name = attrsRaw.slice(nameStart, i);
+    while (i < attrsRaw.length && isSpace(attrsRaw[i])) i++;
+    if (attrsRaw[i] === "=") {
+      i++;
+      while (i < attrsRaw.length && isSpace(attrsRaw[i])) i++;
+      const quote = attrsRaw[i];
+      if (quote === '"' || quote === "'") {
+        const valueStart = i + 1;
+        let j = valueStart;
+        while (j < attrsRaw.length && attrsRaw[j] !== quote) j++;
+        const value = attrsRaw.slice(valueStart, j);
+        if (name && (j >= attrsRaw.length || SWALLOWED_ATTR_RE.test(value))) {
+          found.push({ attrName: name.toLowerCase(), kind: "unclosed" });
+        }
+        i = j + 1;
+      } else if (name) {
+        // Значение без кавычек. Ищем ближайшую кавычку не только в первом
+        // "слове" (до пробела) — потерянное значение вполне может
+        // растянуться на несколько слов (см. NEXT_ATTR_START_RE выше) —
+        // а границей служит начало следующего НАСТОЯЩЕГО атрибута
+        // (name="...") либо конец attrsRaw, если такого не нашлось.
+        const valueStart = i;
+        const rest = attrsRaw.slice(valueStart);
+        const nextAttrMatch = NEXT_ATTR_START_RE.exec(rest);
+        const scanEnd = nextAttrMatch ? valueStart + nextAttrMatch.index : attrsRaw.length;
+        const scanned = attrsRaw.slice(valueStart, scanEnd);
+        const quoteIdx = scanned.search(/["']/);
+        if (quoteIdx !== -1) {
+          found.push({ attrName: name.toLowerCase(), kind: "unopened" });
+          i = valueStart + quoteIdx + 1;
+        } else {
+          // Кавычка нигде до следующего настоящего атрибута не нашлась —
+          // просто продвигаемся минимум на одно "слово" (как раньше), не
+          // трогая scanEnd: остаток нужно разобрать обычным образом
+          // (следующие токены могут оказаться настоящими атрибутами).
+          while (i < attrsRaw.length && !isSpace(attrsRaw[i])) i++;
+        }
+      } else {
+        i++;
+      }
+    } else if (!name) {
+      i++;
+    }
+  }
+  return found;
+}
+
+// Возвращает имена ВСЕХ атрибутов узла в порядке появления (в нижнем
+// регистре, с повторами, если в разметке они реально есть) — нужно,
+// чтобы пронумеровать occurrence атрибута (см. QuoteIssueLocation ниже)
+// СРЕДИ ВСЕХ узлов на одной строке вывода: при схлопывании нескольких
+// инлайн-тегов в одну строку (см. isFlowNode) один и тот же атрибут может
+// встретиться несколько раз на строке, но диагностика (см. findQuoteIssues
+// выше) сработает не для всех — например, у одного <a> атрибут style
+// абсолютно валиден, а у соседнего <img> на той же строке — потерял
+// кавычку. Простого сопоставления "по имени атрибута" здесь недостаточно,
+// нужно знать, КОТОРОЕ по счёту вхождение виновато.
+function extractAttrNamesInOrder(attrsRaw: string): string[] {
+  const names: string[] = [];
+  const isSpace = (c: string) => /\s/.test(c);
+  const isNameChar = (c: string) => /[a-zA-Z0-9:_-]/.test(c);
+  let i = 0;
+  while (i < attrsRaw.length) {
+    while (i < attrsRaw.length && isSpace(attrsRaw[i])) i++;
+    const nameStart = i;
+    while (i < attrsRaw.length && isNameChar(attrsRaw[i])) i++;
+    const name = attrsRaw.slice(nameStart, i);
+    if (name) names.push(name.toLowerCase());
+    while (i < attrsRaw.length && isSpace(attrsRaw[i])) i++;
+    if (attrsRaw[i] === "=") {
+      i++;
+      while (i < attrsRaw.length && isSpace(attrsRaw[i])) i++;
+      const quote = attrsRaw[i];
+      if (quote === '"' || quote === "'") {
+        const valueStart = i + 1;
+        let j = valueStart;
+        while (j < attrsRaw.length && attrsRaw[j] !== quote) j++;
+        i = j + 1;
+      } else if (name) {
+        while (i < attrsRaw.length && !isSpace(attrsRaw[i])) i++;
+      } else {
+        i++;
+      }
+    } else if (!name) {
+      i++;
+    }
+  }
+  return names;
+}
+
 // normalizeAttrsWhitespace — намеренно ЗДЕСЬ, при сборке строки для
 // ВЫВОДА, а не на этапе парсинга (см. комментарий у самой функции в
 // parser.ts): node.attrsRaw в дереве всегда сырой, схлопывание нужно
@@ -195,11 +340,24 @@ function serializeFlow(node: Node): string {
 // текст элемента и его открывающий тег после join() неотличимы друг от
 // друга для простого регэкспа. Отслеживаем границы тегов (и кавычки
 // внутри них, как и при разборе) явно, чтобы разница была видна.
+//
+// justSawEquals — та же защита, что и в parseElement/normalizeAttrsWhitespace
+// (см. src/parser.ts): кавычка открывает "внутри кавычек" ТОЛЬКО если стоит
+// прямо после "=" (пропуская пробелы). Без этого одна незакрытая кавычка в
+// значении атрибута (см. findQuoteIssues) сбивала здесь чётность кавычек —
+// ровно тот же класс бага, что чинили в самом парсере, только в этой
+// отдельной копии похожей логики: настоящий перенос строки между двумя
+// соседними инлайн-тегами (например, "\n" между двумя <a>) ошибочно
+// считался "внутри тега" и просачивался в результат буквально, вместо того
+// чтобы схлопнуться в пробел — из-за чего инлайн-сегмент рендерился со
+// сломанными переносами, а диагностика кавычек у нескольких узлов в одном
+// сегменте съезжала на одну и ту же (неверную) строку.
 function collapseFlowWhitespace(text: string): string {
   let result = "";
   let inTag = false;
   let inSingle = false;
   let inDouble = false;
+  let justSawEquals = false;
   let i = 0;
   while (i < text.length) {
     const c = text[i];
@@ -209,18 +367,21 @@ function collapseFlowWhitespace(text: string): string {
         if (c === "'") inSingle = false;
       } else if (inDouble) {
         if (c === '"') inDouble = false;
-      } else if (c === "'") {
+      } else if (c === "'" && justSawEquals) {
         inSingle = true;
-      } else if (c === '"') {
+      } else if (c === '"' && justSawEquals) {
         inDouble = true;
       } else if (c === ">") {
         inTag = false;
       }
+      if (c === "=") justSawEquals = true;
+      else if (!/\s/.test(c)) justSawEquals = false;
       i++;
       continue;
     }
     if (c === "<") {
       inTag = true;
+      justSawEquals = false;
       result += c;
       i++;
       continue;
@@ -356,6 +517,20 @@ interface LeakEntry {
   // письма (никак не связанная с MSO-приёмом) перехватывает законную
   // пару у настоящей MSO-тройки.
   openedInConditionalComment: boolean;
+  // Текст (openRaw) ближайшего условного комментария, внутри которого тег
+  // открылся — например "<!--[if gte mso 9]>", или null, если тег открылся
+  // вне всякого условного комментария (см. openedInConditionalComment).
+  // Нужен, чтобы предложенная обёртка (см. closesInsideConditionalComment
+  // ниже и UnclosedTagGroup) повторяла ТО ЖЕ условие, а не общее "[if mso]".
+  openedInConditionalCommentText: string | null;
+  // true, если в момент, когда insertBeforeLine наконец определился (тег
+  // "вытеснился" из стека — закрытием предка, попутным резолвом чужого
+  // "ничьего" тега или концом документа), рендер всё ещё находился ВНУТРИ
+  // какого-нибудь условного комментария (необязательно ТОГО ЖЕ самого, но
+  // на практике это и не важно — если предложенная точка вставки и так уже
+  // лежит внутри чьей-то outlook-конструкции, добавлять ещё одну новую не
+  // нужно). Пока тег так и не вытеснился — остаётся false (не используется).
+  closesInsideConditionalComment: boolean;
 }
 
 export interface UnclosedTagInfo {
@@ -374,6 +549,28 @@ export interface UnclosedTagInfo {
   insertConfidence: "reliable" | "uncertain";
 }
 
+// Цепочка вложенных незакрытых тегов, вытесненных в ОДНУ и ту же точку
+// вставки (см. Renderer.getUnclosedTagGroups) — веб-интерфейс показывает
+// такую цепочку одним общим попапом ("первый тег...последний тег" в
+// статусе) вместо отдельного попапа на каждый тег. tags.length === 1 —
+// обычный одиночный незакрытый тег, ничем не отличается от прежнего
+// поведения.
+export interface UnclosedTagGroup {
+  // От первого (самый внешний, раньше открылся) до последнего (самый
+  // внутренний, позже открылся).
+  tags: UnclosedTagInfo[];
+  insertBeforeLine: number;
+  insertConfidence: "reliable" | "uncertain";
+  // true — у цепочки нет собственной outlook-конструкции в точке
+  // вставки (см. LeakEntry.closesInsideConditionalComment), и веб-
+  // интерфейсу нужно предложить обернуть ВСЕ закрывающие теги в новую
+  // <!--[if ...]-->...<![endif]--> вместо того, чтобы просто дописать их
+  // по отдельности — см. conditionalCommentText (текст условия для
+  // обёртки, тот же, что был у исходного открывающего комментария).
+  needsConditionalCommentWrap: boolean;
+  conditionalCommentText: string | null;
+}
+
 // Диагностика "пустых атрибутов" (см. EMPTY_ATTR_NAMES/findEmptyAttrNames/
 // categorizeEmptyAttr выше) — сгруппирована ПО ИМЕНИ атрибута внутри
 // каждой из двух категорий (fill/delete, см. Renderer.getEmptyAttrsToFill/
@@ -388,6 +585,28 @@ export interface EmptyAttrGroup {
   attrName: string;
   // 0-based номера строк, в порядке появления по документу.
   lines: number[];
+}
+
+// Диагностика "проблема с кавычкой" (см. QuoteIssue/findQuoteIssues выше) —
+// в отличие от EmptyAttrGroup хранит не просто номер строки, а ЕЩЁ и
+// occurrence: порядковый номер (1-based) появления ЭТОГО имени атрибута
+// СРЕДИ ВСЕХ узлов на этой же строке (см. extractAttrNamesInOrder/
+// attrNameOccurrenceOnLine в Renderer). Нужен веб-интерфейсу, чтобы точно
+// найти в DOM именно то вхождение атрибута, у которого реально есть
+// проблема, а не любое одноимённое на той же (после схлопывания инлайн-
+// потока в одну строку) визуальной строке — иначе, если на строке
+// одновременно есть валидное и сломанное вхождение одного и того же имени
+// атрибута (реальный случай: у одного <a> валидный style, у соседнего
+// <img> на той же строке — style без кавычек), подсветка могла попасть не
+// на то вхождение.
+export interface QuoteIssueLocation {
+  line: number;
+  occurrence: number;
+}
+
+export interface QuoteIssueGroup {
+  attrName: string;
+  locations: QuoteIssueLocation[];
 }
 
 // Рендерер держит ДВЕ вещи как общее изменяемое состояние вместо
@@ -430,6 +649,14 @@ class Renderer {
   // а не boolean, потому что условные комментарии могут быть вложены
   // друг в друга.
   private conditionalCommentDepth = 0;
+  // Стек ТЕКСТОВ условий (node.openRaw, например "<!--[if gte mso 9]>")
+  // открытых сейчас условных комментариев — параллельно conditionalCommentDepth
+  // выше (тот только считает вложенность, этот хранит САМИ тексты). Нужен
+  // для группировки цепочек незакрытых тегов (см. UnclosedTagGroup ниже):
+  // если тегу для закрытия нужна НОВАЯ outlook-конструкция, она должна
+  // повторять ТО ЖЕ условие, что было у исходного открывающего комментария,
+  // а не универсальное "[if mso]" — см. LeakEntry.openedInConditionalCommentText.
+  private conditionalCommentTextStack: string[] = [];
   // Имя тега РЕАЛЬНОГО (структурного) родителя текущей точки рендера —
   // не спутывать с currentUnclosedAncestor (тот — ближайший НЕЗАКРЫТЫЙ
   // предок, для утечки глубины). Обновляется вокруг рекурсии в детей
@@ -456,6 +683,20 @@ class Renderer {
   // categorizeEmptyAttr — зависит от тега).
   private emptyAttrsFillByName = new Map<string, number[]>();
   private emptyAttrsDeleteByName = new Map<string, number[]>();
+  // См. QuoteIssue/findQuoteIssues/QuoteIssueLocation выше — та же идея
+  // группировки по имени, что и у emptyAttrsFillByName/DeleteByName, но
+  // значение — не просто номер строки, а {line, occurrence} (см.
+  // QuoteIssueLocation), разложенная по тем же двум категориям
+  // ("unclosed"/"unopened").
+  private unclosedQuoteByName = new Map<string, QuoteIssueLocation[]>();
+  private unopenedQuoteByName = new Map<string, QuoteIssueLocation[]>();
+  // Счётчик "которое по счёту вхождение этого имени атрибута на этой
+  // строке" (ключ "line:name") — считает ВСЕ узлы с этим именем атрибута
+  // на строке, независимо от того, есть ли у них проблема с кавычкой (см.
+  // QuoteIssueLocation и extractAttrNamesInOrder выше): иначе, если на
+  // строке есть и валидное, и сломанное вхождение одного и того же имени,
+  // occurrence сломанного мог бы совпасть с валидным.
+  private attrNameOccurrenceOnLine = new Map<string, number>();
 
   constructor(private readonly options: ResolvedFormatOptions) {}
 
@@ -467,6 +708,7 @@ class Renderer {
     for (const entry of this.leakStack) {
       if (entry && entry.insertBeforeLine === Infinity) {
         entry.insertBeforeLine = this.out.length;
+        entry.closesInsideConditionalComment = this.conditionalCommentDepth > 0;
       }
     }
     return this.out.join("\n");
@@ -490,12 +732,112 @@ class Renderer {
       }));
   }
 
+  // Группирует незакрытые теги в "цепочки" — см. UnclosedTagGroup: серию
+  // ВЛОЖЕННЫХ (по-настоящему, через parentEntry, а не просто случайно
+  // совпавших по номеру строки) незакрытых предков, которые все вытеснились
+  // в ОДНУ и ту же точку вставки (см. запрос пользователя — веб-интерфейс
+  // показывает такую цепочку одним общим попапом с двумя линиями-
+  // указателями, к первому и последнему тегу, вместо кучи отдельных
+  // попапов подряд). Одиночный незакрытый тег без цепочки — просто группа
+  // из одного элемента, так что вызывающей стороне не нужно разбирать два
+  // разных случая отдельно.
+  //
+  // Линейный проход по allLeakEntries (порядок — порядок появления в
+  // документе, он же порядок открытия тегов) — а не полный обход дерева:
+  // цепочка родитель→потомок→потомок физически не может идти иначе, кроме
+  // как подряд по возрастанию времени открытия, так что не нужно
+  // реконструировать дерево заново, достаточно смотреть на
+  // parentEntry/insertBeforeLine соседей-кандидатов.
+  getUnclosedTagGroups(): UnclosedTagGroup[] {
+    const unresolved = this.allLeakEntries.filter((e) => !e.resolved);
+    const consumed = new Set<LeakEntry>();
+    const chains: LeakEntry[][] = [];
+    for (const entry of unresolved) {
+      if (consumed.has(entry)) continue;
+      const chain = [entry];
+      consumed.add(entry);
+      let current = entry;
+      for (;;) {
+        // Цепочка продолжается только если у current РОВНО ОДИН ещё не
+        // взятый незакрытый потомок в этой же точке вставки — при
+        // ветвлении (два и более кандидата) ни один не считается
+        // "продолжением", каждый остаётся собственной отдельной цепочкой
+        // (см. запрос пользователя — только линейная последовательность,
+        // не дерево).
+        const children = unresolved.filter(
+          (e) =>
+            !consumed.has(e) &&
+            e.parentEntry === current &&
+            e.insertBeforeLine === current.insertBeforeLine,
+        );
+        if (children.length !== 1) break;
+        current = children[0];
+        chain.push(current);
+        consumed.add(current);
+      }
+      chains.push(chain);
+    }
+    return chains.map((chain) => this.buildUnclosedTagGroup(chain));
+  }
+
+  private buildUnclosedTagGroup(chain: LeakEntry[]): UnclosedTagGroup {
+    const tags: UnclosedTagInfo[] = chain.map((e) => ({
+      line: e.line,
+      tagName: e.tagName,
+      insertBeforeLine: e.insertBeforeLine,
+      depth: e.popToDepth,
+      insertConfidence: e.insertConfidence,
+    }));
+    // "reliable" только если ВСЕ теги цепочки reliable — как и у
+    // одиночных тегов (см. insertConfidence в LeakEntry), показывать
+    // серую подсказку/попап для группы, где хоть один участник под
+    // сомнением, было бы так же вводящим в заблуждение, как и для
+    // одиночного uncertain-тега.
+    const insertConfidence: "reliable" | "uncertain" = chain.every(
+      (e) => e.insertConfidence === "reliable",
+    )
+      ? "reliable"
+      : "uncertain";
+    const first = chain[0];
+    // Обёртка нужна, только если ВСЯ цепочка целиком открылась в ОДНОМ и
+    // том же условном комментарии, и точка вставки закрывающих тегов уже
+    // НЕ находится ни в каком условном комментарии (см. запрос
+    // пользователя) — частичное совпадение (например, только внешний тег
+    // открылся в outlook, а внутренний — уже снаружи) означает, что это
+    // не единая MSO-конструкция, и мы не пытаемся угадывать, что тут
+    // предложить.
+    const needsWrap =
+      insertConfidence === "reliable" &&
+      first.openedInConditionalCommentText !== null &&
+      chain.every(
+        (e) =>
+          e.openedInConditionalComment &&
+          !e.closesInsideConditionalComment &&
+          e.openedInConditionalCommentText === first.openedInConditionalCommentText,
+      );
+    return {
+      tags,
+      insertBeforeLine: first.insertBeforeLine,
+      insertConfidence,
+      needsConditionalCommentWrap: needsWrap,
+      conditionalCommentText: needsWrap ? first.openedInConditionalCommentText : null,
+    };
+  }
+
   getEmptyAttrsToFill(): EmptyAttrGroup[] {
     return [...this.emptyAttrsFillByName.entries()].map(([attrName, lines]) => ({ attrName, lines }));
   }
 
   getEmptyAttrsToDelete(): EmptyAttrGroup[] {
     return [...this.emptyAttrsDeleteByName.entries()].map(([attrName, lines]) => ({ attrName, lines }));
+  }
+
+  getUnclosedQuoteAttrs(): QuoteIssueGroup[] {
+    return [...this.unclosedQuoteByName.entries()].map(([attrName, locations]) => ({ attrName, locations }));
+  }
+
+  getUnopenedQuoteAttrs(): QuoteIssueGroup[] {
+    return [...this.unopenedQuoteByName.entries()].map(([attrName, locations]) => ({ attrName, locations }));
   }
 
   private indent(depth = this.depth): string {
@@ -533,17 +875,20 @@ class Renderer {
   // Проверяет ТОЛЬКО собственные атрибуты узла (не детей) — вызывать для
   // каждого узла ровно там, где уже известно, что this.out.length —
   // индекс строки, на которой вот-вот напечатается ЕГО открывающий тег.
-  // Детей такого узла эта функция не трогает — они либо получат свой
-  // собственный вызов через обычную рекурсию renderNodes (обычные
-  // блочные потомки), либо их нужно обойти отдельно через
-  // checkEmptyAttrsDeep (инлайн-поток, схлопнутый в одну строку, — там
-  // дети НЕ проходят через renderNodes самостоятельно).
+  // Заодно (см. findQuoteIssues) ловит одиночные непарные кавычки внутри
+  // значений — чисто информационная диагностика, отдельная от "пустых
+  // атрибутов", но проверяется тем же проходом по тем же узлам, чтобы не
+  // заводить второй параллельный обход дерева. Детей такого узла эта
+  // функция не трогает — они либо получат свой собственный вызов через
+  // обычную рекурсию renderNodes (обычные блочные потомки), либо их
+  // нужно обойти отдельно через checkEmptyAttrsDeep (инлайн-поток,
+  // схлопнутый в одну строку, — там дети НЕ проходят через renderNodes
+  // самостоятельно).
   private checkEmptyAttrsOwn(node: Node): void {
     if (node.type !== "element" && node.type !== "raw-text" && node.type !== "style") return;
     if (!node.attrsRaw) return;
-    const names = findEmptyAttrNames(node.attrsRaw);
-    if (names.length === 0) return;
     const line = this.out.length;
+    const names = findEmptyAttrNames(node.attrsRaw);
     for (const name of names) {
       const map =
         categorizeEmptyAttr(name, node.tagName) === "fill"
@@ -552,6 +897,39 @@ class Renderer {
       const list = map.get(name);
       if (list) list.push(line);
       else map.set(name, [line]);
+    }
+    const quoteIssues = findQuoteIssues(node.attrsRaw);
+    // occurrence считаем для ВСЕХ имён атрибутов узла безусловно (не
+    // только при наличии проблемы) — иначе валидное вхождение этого же
+    // имени на другом узле той же строки (см. attrNameOccurrenceOnLine)
+    // не "займёт" свой номер, и нумерация собьётся для узлов, идущих
+    // ПОСЛЕ него на этой же строке.
+    const namesInOrder = extractAttrNamesInOrder(node.attrsRaw);
+    const ordinalsByName = new Map<string, number[]>();
+    for (const attrName of namesInOrder) {
+      const key = `${line}:${attrName}`;
+      const next = (this.attrNameOccurrenceOnLine.get(key) ?? 0) + 1;
+      this.attrNameOccurrenceOnLine.set(key, next);
+      const list = ordinalsByName.get(attrName);
+      if (list) list.push(next);
+      else ordinalsByName.set(attrName, [next]);
+    }
+    if (quoteIssues.length > 0) {
+      // localIdxByName — которое по счёту (внутри ЭТОГО узла) вхождение
+      // данного имени соответствует текущей проблеме: на практике почти
+      // всегда 0 (дублирующиеся имена атрибутов внутри одного тега —
+      // невалидная редкость), но на всякий случай не полагаемся на это.
+      const localIdxByName = new Map<string, number>();
+      for (const issue of quoteIssues) {
+        const localIdx = localIdxByName.get(issue.attrName) ?? 0;
+        localIdxByName.set(issue.attrName, localIdx + 1);
+        const occurrence = ordinalsByName.get(issue.attrName)?.[localIdx] ?? 1;
+        const map = issue.kind === "unclosed" ? this.unclosedQuoteByName : this.unopenedQuoteByName;
+        const loc: QuoteIssueLocation = { line, occurrence };
+        const list = map.get(issue.attrName);
+        if (list) list.push(loc);
+        else map.set(issue.attrName, [loc]);
+      }
     }
   }
 
@@ -734,6 +1112,7 @@ class Renderer {
           if (!collateral) continue;
           if (collateral.insertBeforeLine === Infinity) {
             collateral.insertBeforeLine = this.out.length;
+            collateral.closesInsideConditionalComment = this.conditionalCommentDepth > 0;
             collateral.insertConfidence = isDescendantOfEntry(collateral, matched)
               ? "reliable"
               : "uncertain";
@@ -814,11 +1193,13 @@ class Renderer {
         this.pushLine(this.indent(d) + node.openRaw);
         this.depth = d + 1;
         this.conditionalCommentDepth++;
+        this.conditionalCommentTextStack.push(node.openRaw);
         // Отметка стека ДО рендера детей — нужна, чтобы отличить два
         // разных случая ниже (см. комментарий у проверки leakStack).
         const leakMark = this.leakStack.length;
         this.renderNodes(node.children);
         this.conditionalCommentDepth--;
+        this.conditionalCommentTextStack.pop();
         // Если внутри всё аккуратно закрылось (глубина вернулась ровно к
         // d + 1, то есть к уровню собственного содержимого комментария),
         // закрывающий маркер выравниваем с открывающим — как обычный
@@ -906,6 +1287,9 @@ class Renderer {
             insertConfidence: "reliable",
             parentEntry: this.currentUnclosedAncestor,
             openedInConditionalComment: this.conditionalCommentDepth > 0,
+            openedInConditionalCommentText:
+              this.conditionalCommentTextStack[this.conditionalCommentTextStack.length - 1] ?? null,
+            closesInsideConditionalComment: false,
           };
           this.leakStack.push(ownEntry);
           this.allLeakEntries.push(ownEntry);
@@ -928,6 +1312,7 @@ class Renderer {
             const pruned = this.leakStack[k];
             if (pruned && pruned.insertBeforeLine === Infinity) {
               pruned.insertBeforeLine = this.out.length;
+              pruned.closesInsideConditionalComment = this.conditionalCommentDepth > 0;
             }
           }
           this.leakStack.length = prunedFrom;
@@ -1000,6 +1385,9 @@ class Renderer {
             insertConfidence: "reliable",
             parentEntry: this.currentUnclosedAncestor,
             openedInConditionalComment: this.conditionalCommentDepth > 0,
+            openedInConditionalCommentText:
+              this.conditionalCommentTextStack[this.conditionalCommentTextStack.length - 1] ?? null,
+            closesInsideConditionalComment: false,
           };
           this.leakStack.push(ownEntry);
           this.allLeakEntries.push(ownEntry);
@@ -1056,6 +1444,7 @@ class Renderer {
             const pruned = this.leakStack[k];
             if (pruned && pruned.insertBeforeLine === Infinity) {
               pruned.insertBeforeLine = this.out.length;
+              pruned.closesInsideConditionalComment = this.conditionalCommentDepth > 0;
             }
           }
           this.leakStack.length = prunedFrom;
@@ -1086,11 +1475,11 @@ export interface FormatOptions {
   // трогаются). Применяется только там, где рядом есть кириллица —
   // см. src/typograf.ts. Включено по умолчанию.
   typografy?: boolean;
-  // "Очистка от служебных атрибутов": убирает теги <tbody>/</tbody>
-  // (разворачивает — тег убирается, содержимое остаётся на его месте) и
-  // class="esd-text" (убирается целиком; если у тега есть другие
-  // классы — остаются только они). См. src/serviceCleanup.ts. Включено
-  // по умолчанию.
+  // "Очистка лишнего кода": убирает теги <tbody>/</tbody> (разворачивает
+  // — тег убирается, содержимое остаётся на его месте), class="esd-text"
+  // (убирается целиком; если у тега есть другие классы — остаются только
+  // они) и заменяет &#39; на настоящий апостроф. См. src/serviceCleanup.ts.
+  // Включено по умолчанию.
   cleanServiceAttrs?: boolean;
 }
 
@@ -1161,6 +1550,13 @@ function applyTypographyToTree(nodes: Node[], stats: TypografStats): void {
         (isBlockNeighborSignal(prev) || isBlockNeighborSignal(next));
       if (!isBareBetweenBlocks) {
         node.value = applyTypography(node.value, stats);
+        // Предлог/короткое слово — последнее "слово" ЭТОГО узла, а
+        // реальное следующее слово лежит уже внутри соседнего инлайн-тега
+        // (см. glueTrailingClingingWordBeforeInline в typograf.ts) — сам
+        // applyTypography такое не видит, он не знает про соседей по дереву.
+        if (isInlineNeighbor(next)) {
+          node.value = glueTrailingClingingWordBeforeInline(node.value, stats);
+        }
       }
     } else if (
       node.type === "element" ||
@@ -1193,6 +1589,9 @@ function serviceCleanupStatsToItems(stats: ServiceCleanupStats): CountedItem[] {
   const items: CountedItem[] = [];
   if (stats.esdTextClass > 0) items.push({ label: 'class="esd-text"', count: stats.esdTextClass });
   if (stats.tbody > 0) items.push({ label: "<tbody>", count: stats.tbody });
+  if (stats.apostropheEntity > 0) {
+    items.push({ label: "&#39; заменено на апостроф", count: stats.apostropheEntity });
+  }
   return items;
 }
 
@@ -1202,6 +1601,11 @@ export interface FormatResult {
   // закрывающего тега (ни обычного </tag>, ни "ничьего" — даже в другом
   // условном комментарии). Пустой массив — незакрытых тегов нет.
   unclosedTags: UnclosedTagInfo[];
+  // То же самое, но сгруппированное в цепочки (см. UnclosedTagGroup) —
+  // основной источник данных для веб-интерфейса (попапы/статус); плоский
+  // unclosedTags выше сохранён как есть для обратной совместимости и
+  // существующих тестов.
+  unclosedTagGroups: UnclosedTagGroup[];
   // Атрибуты из EMPTY_ATTR_NAMES, встреченные с пустым значением ("" или
   // ''), сгруппированные по имени — раздельно по категориям (см.
   // categorizeEmptyAttr): emptyAttrsToFill — самим не вывести значение,
@@ -1210,6 +1614,16 @@ export interface FormatResult {
   // (остальные, включая width НЕ у <img>). Пустой массив — таких нет.
   emptyAttrsToFill: EmptyAttrGroup[];
   emptyAttrsToDelete: EmptyAttrGroup[];
+  // Одиночные (без пары) кавычки внутри значений атрибутов (см.
+  // QuoteIssue/findQuoteIssues выше) — чисто информационная диагностика,
+  // без попапа с предложением что-то поменять: unclosedQuoteAttrs —
+  // значение НАЧАЛОСЬ с кавычки, но её пара не нашлась (или "проглотила"
+  // соседний атрибут); unopenedQuoteAttrs — кавычка затесалась внутрь
+  // значения БЕЗ кавычек, значит где-то забыли открывающую пару. Пустой
+  // массив — таких нет. На саму структуру дерева/тегов эти кавычки уже не
+  // влияют (см. justSawEquals в parser.ts).
+  unclosedQuoteAttrs: QuoteIssueGroup[];
+  unopenedQuoteAttrs: QuoteIssueGroup[];
   // Сводки для плашек "Удалены (не влияет на вёрстку):" и "Типографика
   // готова:" в веб-интерфейсе (см. typografStatsToItems/
   // serviceCleanupStatsToItems выше) — пустой массив, если соответствующая
@@ -1224,7 +1638,7 @@ export function formatHtmlWithDiagnostics(
 ): FormatResult {
   const doc = parseHtml(source);
   const resolved: ResolvedFormatOptions = { ...DEFAULT_OPTIONS, ...options };
-  const serviceCleanupStats: ServiceCleanupStats = { esdTextClass: 0, tbody: 0 };
+  const serviceCleanupStats: ServiceCleanupStats = { esdTextClass: 0, tbody: 0, apostropheEntity: 0 };
   if (resolved.cleanServiceAttrs) {
     doc.children = applyServiceCleanup(doc.children, serviceCleanupStats);
   }
@@ -1237,8 +1651,11 @@ export function formatHtmlWithDiagnostics(
   return {
     html,
     unclosedTags: renderer.getUnclosedTags(),
+    unclosedTagGroups: renderer.getUnclosedTagGroups(),
     emptyAttrsToFill: renderer.getEmptyAttrsToFill(),
     emptyAttrsToDelete: renderer.getEmptyAttrsToDelete(),
+    unclosedQuoteAttrs: renderer.getUnclosedQuoteAttrs(),
+    unopenedQuoteAttrs: renderer.getUnopenedQuoteAttrs(),
     removedServiceItems: serviceCleanupStatsToItems(serviceCleanupStats),
     typografyItems: typografStatsToItems(typografStats),
   };

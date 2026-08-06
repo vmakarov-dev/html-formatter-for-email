@@ -1,4 +1,4 @@
-// "Очистка от служебных атрибутов": убирает разметку, которую оставляют
+// "Очистка лишнего кода": убирает разметку, которую оставляют
 // после себя email-конструкторы (ESD-билдеры) и которая не несёт
 // смысловой нагрузки для итогового HTML:
 //
@@ -10,6 +10,9 @@
 // 2. class="esd-text" — служебный маркер-класс, который ESD-конструкторы
 //    вешают на текстовые блоки. Убирается целиком; если у тега помимо
 //    esd-text есть другие классы, остаются только они.
+// 3. &#39; — числовая HTML-сущность одинарной кавычки, которую некоторые
+//    конструкторы подставляют вместо обычного апострофа (в тексте и в
+//    значениях атрибутов) — заменяется на настоящий символ "'".
 //
 // Как и типограф (см. typograf.ts) — это осознанное изменение
 // СОДЕРЖИМОГО документа, а не просто отступов, поэтому применяется
@@ -19,6 +22,7 @@
 import { Node } from "./types.js";
 
 const ESD_TEXT_CLASS = "esd-text";
+const APOSTROPHE_ENTITY_RE = /&#39;/gi;
 
 // Счётчик того, что реально убрала очистка — нужен только для сводной
 // плашки "Удалены (не влияет на вёрстку):" в веб-интерфейсе (см.
@@ -27,6 +31,35 @@ const ESD_TEXT_CLASS = "esd-text";
 export interface ServiceCleanupStats {
   esdTextClass: number;
   tbody: number;
+  apostropheEntity: number;
+}
+
+// Заменяет &#39; на настоящий апостроф внутри ДВОЙНЫХ кавычек значений
+// атрибутов (attrsRaw узла целиком, включая ВСЕ его атрибуты сразу) —
+// например, style="font-family: Arial,&#39;Helvetica Neue&#39;". Только
+// двойные: замена внутри ОДИНАРНЫХ кавычек (value='...') сломала бы
+// границу самого значения буквальным апострофом. Простой regex по "..."
+// достаточен — HTML не допускает неэкранированных двойных кавычек внутри
+// уже двойными же кавычками очерченного значения, а значит границы values
+// здесь однозначны без полноценного разбора attrsRaw токен за токеном (как
+// у findQuoteIssues/findEmptyAttrNames), сложность которого тут не нужна.
+function replaceApostropheEntityInAttrs(attrsRaw: string, stats: ServiceCleanupStats): string {
+  if (!/&#39;/i.test(attrsRaw)) return attrsRaw;
+  return attrsRaw.replace(/="([^"]*)"/g, (full: string, value: string) => {
+    if (!/&#39;/i.test(value)) return full;
+    const count = value.match(APOSTROPHE_ENTITY_RE)?.length ?? 0;
+    stats.apostropheEntity += count;
+    return `="${value.replace(APOSTROPHE_ENTITY_RE, "'")}"`;
+  });
+}
+
+// То же самое, но для обычного текстового содержимого (не атрибутов) —
+// здесь кавычек-границ вообще нет, менять можно без ограничений.
+function replaceApostropheEntityInText(text: string, stats: ServiceCleanupStats): string {
+  if (!/&#39;/i.test(text)) return text;
+  const count = text.match(APOSTROPHE_ENTITY_RE)?.length ?? 0;
+  stats.apostropheEntity += count;
+  return text.replace(APOSTROPHE_ENTITY_RE, "'");
 }
 
 // Убирает токен esd-text из атрибута class у узла с attrsRaw — не
@@ -60,6 +93,7 @@ export function applyServiceCleanup(nodes: Node[], stats: ServiceCleanupStats): 
   for (const node of nodes) {
     if (node.type === "element") {
       stripEsdTextClass(node, stats);
+      if (node.attrsRaw) node.attrsRaw = replaceApostropheEntityInAttrs(node.attrsRaw, stats);
       node.children = applyServiceCleanup(node.children, stats);
       if (node.tagName.toLowerCase() === "tbody") {
         stats.tbody++;
@@ -70,6 +104,9 @@ export function applyServiceCleanup(nodes: Node[], stats: ServiceCleanupStats): 
       node.children = applyServiceCleanup(node.children, stats);
     } else if (node.type === "raw-text" || node.type === "style") {
       stripEsdTextClass(node, stats);
+      if (node.attrsRaw) node.attrsRaw = replaceApostropheEntityInAttrs(node.attrsRaw, stats);
+    } else if (node.type === "text") {
+      node.value = replaceApostropheEntityInText(node.value, stats);
     }
     result.push(node);
   }

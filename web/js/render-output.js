@@ -44,12 +44,19 @@
     lastCloseFlags = closeFlags;
     lastOrigToFinalRow = origToFinalRow;
     emptyAttrDomIndex = buildEmptyAttrDomIndex();
+    // ПОСЛЕ индекса пустых атрибутов (см. buildEmptyAttrDomIndex) — сам
+    // индекс уже построен на нетронутом DOM, а applyQuoteIssueHighlights
+    // может расщепить текстовый узел значения атрибута на несколько (см.
+    // markOneQuoteChar), но не трогает набор тегов/переносов строк, так
+    // что расхождения в подсчёте строк отсюда не возникает.
+    applyQuoteIssueHighlights();
     // Флажки — часть содержимого колонки номеров (см. renderOutputLineNumbers),
     // так что перерисовываются вместе с ней, а не отдельным слоем поверх.
     renderOutputLineNumbers(lineCount);
     renderPopups();
     updateScrollHints();
     updateOutputStatus();
+    updateQuoteIssuesStatus();
     updateEmptyAttrsStatus();
     updateServiceCleanupStatus();
     updateTypografyStatus();

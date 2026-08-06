@@ -1026,6 +1026,35 @@
     animation: empty-attr-flash 1s ease-in-out 2;
     border-radius: 3px;
   }
+  /* Подсказка "проверьте кавычку" (см. QuoteIssue/findQuoteIssues в
+     src/formatter.ts и applyQuoteIssueHighlights в status-plates.js) —
+     ПОСТОЯННАЯ (не мигающая, в отличие от .flash-empty-attr) фоновая
+     подсветка на имени атрибута (.tok-attr, золотой), в котором реально
+     есть проблема — попапа и предложенного места вставки здесь намеренно
+     нет (см. запрос пользователя), только "вот тут подозрительно". Сам
+     текст НЕ перекрашивается (color не трогаем) — только фон, поэтому
+     непрозрачность подобрана так, чтобы золотой токен поверх неё читался
+     хорошо. */
+  .quote-issue-mark {
+    background: rgba(255, 59, 74, 0.65);
+    box-shadow: 0 0 0 1px rgba(255, 59, 74, 0.85);
+    border-radius: 3px;
+  }
+  /* Сама кавычка, которую подсветка нашла как РЕАЛЬНО существующую в коде
+     (см. markOneQuoteChar — мы никогда не рисуем кавычку, которой нет, а
+     только отмечаем ту, что уже есть, — открывающую или закрывающую, в
+     зависимости от вида проблемы) — намеренно ДРУГОЙ, зелёный цвет, а не
+     тот же красный, что у имени атрибута: сама кавычка ни в чём не
+     виновата (она стоит на своём месте и корректна), виновато отсутствие
+     ЕЁ ПАРЫ где-то ещё, поэтому и цвет должен читаться иначе, чем
+     "здесь ошибка". Читается и на золотом .tok-attr, и на голубом .tok-val
+     (кавычка может оказаться на любом из них — см. комментарий у
+     markOneQuoteChar в status-plates.js). */
+  .quote-issue-found-mark {
+    background: rgba(66, 214, 128, 0.55);
+    box-shadow: 0 0 0 1px rgba(66, 214, 128, 0.8);
+    border-radius: 3px;
+  }
   /* Условный ("outlook") комментарий целиком — маркеры и всё содержимое
      внутри, включая теги/атрибуты — тем же зелёным, что и обычные
      комментарии (.tok-comment): раньше был отдельный серый, чтобы
@@ -1128,7 +1157,7 @@
         </label>
         <label class="option-plate">
           <input type="checkbox" id="cleanServiceAttrs" checked>
-          Очистка от служебных атрибутов
+          Очистка лишнего кода
         </label>
         <label class="option-plate" title="Ищет атрибуты с пустым значением (src=&quot;&quot;, href=&quot;&quot; и т.п.) — почти всегда ошибка. alt=&quot;&quot; не считается: легитимный приём для декоративных картинок">
           <input type="checkbox" id="checkEmptyAttrs" checked>
@@ -1170,6 +1199,7 @@
     </div>
     <div class="card-footer">
       <button id="copyBtn" class="btn-secondary" type="button">Скопировать</button>
+      <button id="formatResultBtn" class="btn-primary" type="button">Форматировать результат</button>
       <div id="compressGroup" class="compress-group">
         <div class="compress-frame">
           <button id="compressModerateBtn" class="compress-btn" type="button">Сжать (умеренно)</button>
@@ -1183,6 +1213,7 @@
     </div>
     <div class="status-plates-row">
       <div id="outputStatus" class="status-plate"></div>
+      <div id="quoteIssuesStatus" class="status-plate"></div>
       <div id="emptyAttrsFillStatus" class="status-plate"></div>
       <div id="emptyAttrsDeleteStatus" class="status-plate"></div>
       <div id="serviceCleanupStatus" class="status-plate"></div>

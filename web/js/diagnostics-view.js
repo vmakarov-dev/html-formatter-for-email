@@ -35,9 +35,10 @@
   // "Добавить?" встал вплотную к тегу, без ручного подсчёта ширины
   // отступа в пикселях.
   //
-  // Если несколько тегов вытесняются в одной и той же точке — сортируем
-  // по глубине по убыванию, чтобы более вложенные закрывались первыми
-  // (как и положено при обычной вложенности тегов).
+  // Если несколько ГРУПП вытесняются в одну и ту же точку — сортируем по
+  // глубине самого вложенного тега группы по убыванию, чтобы более
+  // вложенные закрывались первыми (как и положено при обычной
+  // вложенности тегов).
   //
   // Серую строку-подсказку, серый флажок и попап показываем ТОЛЬКО для
   // insertConfidence === "reliable" — когда insertBeforeLine и правда
@@ -48,24 +49,49 @@
   // заблуждение: например, там уже может стоять настоящий закрывающий
   // тег для СОВСЕМ ДРУГОГО элемента, и предложенный серый тег рядом с
   // ним выглядел бы как явно некорректный дубль. Такие теги остаются
-  // только с красным флажком, без предложения.
+  // только с красным флажком, без предложения. Группа "reliable" только
+  // если ВСЕ её теги reliable (см. Renderer.getUnclosedTagGroups).
   //
-  // tags — список диагностики незакрытых тегов/конструкций (u.kind
-  // всегда "unclosed", см. applyFormatResult): подсказка — это одна
-  // вставленная серая строка перед insertBeforeLine на глубине depth
-  // (закрывающий тег/конструкция). "Место открытия" (u.line) и "место
-  // предполагаемой починки" (u.insertBeforeLine) — РАЗНЫЕ строки
-  // документа, порой очень далеко друг от друга (см. renderPopups — там
-  // у этой же строки будет ещё один, дублирующий попап).
-  function buildDisplayHtml(html, tags) {
+  // groups — список групп незакрытых тегов/конструкций (см.
+  // UnclosedTagGroup в src/formatter.ts и applyFormatResult) — каждая
+  // группа даёт ОДНУ серую вставку из нескольких строк: закрывающие теги
+  // всех членов группы (от самого внутреннего к самому внешнему — как
+  // они закрывались бы по-настоящему), при needsConditionalCommentWrap
+  // ещё и обёрнутые в новую <!--[if ...]-->...<![endif]-->. Все строки
+  // группы помечены общим data-group-uid (нужен renderPopups — один
+  // общий попап "Добавить?" на всю группу, а не по одному на строку), а
+  // строки с закрывающим тегом ЕЩЁ и своим собственным data-uid (нужен
+  // для попапа "Удалить?" у соответствующего тега и его же флажка в
+  // колонке номеров). "Место открытия" каждого тега (t.line) и "место
+  // починки" (group.insertBeforeLine) — РАЗНЫЕ строки документа, порой
+  // очень далеко друг от друга (см. renderPopups — там у этой же строки
+  // будет ещё один, дублирующий попап).
+  function unclosedGroupLabel(group) {
+    if (group.needsConditionalCommentWrap) return "Outlook-комментарий";
+    if (group.tags.length > 1) {
+      const first = group.tags[0];
+      const last = group.tags[group.tags.length - 1];
+      const firstLabel = isMindboxConstruct(first.tagName) ? mindboxOpenLabel(first.tagName) : `<${first.tagName}>`;
+      const lastLabel = isMindboxConstruct(last.tagName) ? mindboxOpenLabel(last.tagName) : `<${last.tagName}>`;
+      return `${firstLabel}...${lastLabel}`;
+    }
+    return null;
+  }
+
+  function buildDisplayHtml(html, groups) {
     const highlightedLines = highlightHtml(html).split("\n");
-    const insertions = tags
-      .filter((u) => u.insertConfidence === "reliable")
+    const insertions = groups
+      .filter((g) => g.insertConfidence === "reliable")
       .slice()
-      .sort((a, b) => a.insertBeforeLine - b.insertBeforeLine || b.depth - a.depth);
+      .sort(
+        (a, b) =>
+          a.insertBeforeLine - b.insertBeforeLine ||
+          b.tags[b.tags.length - 1].depth - a.tags[a.tags.length - 1].depth,
+      );
     const unclosedOpenByLine = new Map();
-    for (const u of tags) {
-      if (u.insertConfidence === "reliable") unclosedOpenByLine.set(u.line, u);
+    for (const g of groups) {
+      if (g.insertConfidence !== "reliable") continue;
+      for (const t of g.tags) unclosedOpenByLine.set(t.line, t);
     }
 
     const resultLines = [];
@@ -75,14 +101,42 @@
 
     for (let orig = 0; orig <= highlightedLines.length; orig++) {
       while (insIdx < insertions.length && insertions[insIdx].insertBeforeLine === orig) {
-        const u = insertions[insIdx];
-        const indent = "  ".repeat(u.depth);
-        const tagText = isMindboxConstruct(u.tagName) ? mindboxCloseLabel(u.tagName) : "</" + u.tagName + ">";
-        resultLines.push(
-          `<span class="suggested-line">${escapeHtml(indent)}` +
-            `<span class="suggested-tag" data-uid="${u.__uid}">${escapeHtml(tagText)}</span></span>`,
-        );
-        closeFlags.push({ row: resultLines.length - 1, tagName: u.tagName, uid: u.__uid, kind: u.kind });
+        const g = insertions[insIdx];
+        const label = unclosedGroupLabel(g);
+        const groupSpecial = label !== null;
+        if (g.needsConditionalCommentWrap) {
+          const indent = "  ".repeat(g.tags[0].depth);
+          resultLines.push(
+            `<span class="suggested-line" data-group-uid="${g.__uid}">` +
+              `${escapeHtml(indent + g.conditionalCommentText)}</span>`,
+          );
+        }
+        // От самого внутреннего к самому внешнему — как теги закрывались
+        // бы по-настоящему (см. комментарий у buildDisplayHtml выше).
+        for (let ti = g.tags.length - 1; ti >= 0; ti--) {
+          const t = g.tags[ti];
+          const indent = "  ".repeat(t.depth);
+          const tagText = isMindboxConstruct(t.tagName) ? mindboxCloseLabel(t.tagName) : "</" + t.tagName + ">";
+          resultLines.push(
+            `<span class="suggested-line" data-group-uid="${g.__uid}">${escapeHtml(indent)}` +
+              `<span class="suggested-tag" data-uid="${t.__uid}">${escapeHtml(tagText)}</span></span>`,
+          );
+          closeFlags.push({
+            row: resultLines.length - 1,
+            tagName: t.tagName,
+            uid: t.__uid,
+            kind: g.kind,
+            groupUid: g.__uid,
+            groupSpecial,
+            groupLabel: label,
+          });
+        }
+        if (g.needsConditionalCommentWrap) {
+          const indent = "  ".repeat(g.tags[0].depth);
+          resultLines.push(
+            `<span class="suggested-line" data-group-uid="${g.__uid}">${escapeHtml(indent + "<![endif]-->")}</span>`,
+          );
+        }
         insIdx++;
       }
       if (orig < highlightedLines.length) {
@@ -111,12 +165,22 @@
       }
     }
 
-    const openFlags = tags.map((u) => ({
-      row: origToFinalRow[u.line],
-      tagName: u.tagName,
-      uid: u.__uid,
-      kind: u.kind,
-    }));
+    const openFlags = [];
+    for (const g of groups) {
+      const label = unclosedGroupLabel(g);
+      const groupSpecial = label !== null;
+      for (const t of g.tags) {
+        openFlags.push({
+          row: origToFinalRow[t.line],
+          tagName: t.tagName,
+          uid: t.__uid,
+          kind: g.kind,
+          groupUid: g.__uid,
+          groupSpecial,
+          groupLabel: label,
+        });
+      }
+    }
 
     return {
       displayHtml: resultLines.join("\n"),
