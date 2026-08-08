@@ -273,6 +273,13 @@ function extractAttrNamesInOrder(attrsRaw: string): string[] {
 // только тегу, который печатается одной строкой.
 function openTagString(node: ElementNode): string {
   const attrs = node.attrsRaw ? " " + normalizeAttrsWhitespace(node.attrsRaw) : "";
+  // У тега без настоящего ">" в исходнике (см. ElementNode.unterminated)
+  // ">" НЕ дописываем: символ, которым тег фактически обрывается, уже
+  // лежит внутри attrsRaw. Иначе каждое форматирование добавляло бы по
+  // одному лишнему ">" в текст письма (broken> -> broken>> -> ...).
+  if (node.unterminated) {
+    return `<${node.tagName}${attrs}`;
+  }
   if (node.voidElement) {
     return `<${node.tagName}${attrs}${node.selfClosed ? " />" : ">"}`;
   }
@@ -459,6 +466,29 @@ function isDescendantOfEntry(entry: LeakEntry, ancestor: LeakEntry): boolean {
     cur = cur.parentEntry;
   }
   return false;
+}
+
+// Второй, не менее надёжный вид "предка" — приём ghost-таблиц под Outlook:
+//   <!--[if mso]><td><![endif]-->
+//   <div>… весь видимый контент …
+//   <!--[if mso]></td><![endif]-->
+// Здесь <td> намеренно открыт ВНУТРИ условного комментария, а настоящее
+// содержимое (div) лежит СНАРУЖИ него. По дереву разбора они — соседи, а
+// не предок и потомок (комментарий это отдельный узел), поэтому
+// isDescendantOfEntry выше их родства не видит. Но в ОТРИСОВАННОМ письме
+// div находится именно внутри этого td, и точка, где td закрывается, —
+// ровно то место, где закрылся бы и div. Значит, позиция вставки для него
+// такая же надёжная, как при обычном закрытии предком.
+//
+// Проверять "открыт позже" отдельно не нужно: сюда попадают только записи,
+// лежащие в leak-стеке ВЫШЕ совпавшей, а туда они кладутся строго в
+// порядке открытия.
+//
+// Без этой поправки единственный незакрытый <div> в реальном письме
+// (внутри ghost-колонки) получал "uncertain": ни серой строки-подсказки,
+// ни кнопки "Добавить?" — хотя место вставки вычислялось верное.
+function isWrappedByOutlookBridge(entry: LeakEntry, wrapper: LeakEntry): boolean {
+  return wrapper.openedInConditionalComment && !entry.openedInConditionalComment;
 }
 
 interface LeakEntry {
@@ -657,6 +687,12 @@ class Renderer {
   // повторять ТО ЖЕ условие, что было у исходного открывающего комментария,
   // а не универсальное "[if mso]" — см. LeakEntry.openedInConditionalCommentText.
   private conditionalCommentTextStack: string[] = [];
+  // Номера строк вывода, на которых НАЧАЛИСЬ сейчас открытые условные
+  // комментарии — параллельно двум стекам выше. Нужны для одной вещи:
+  // подсказать правильную точку вставки закрывающего тега для элемента,
+  // который сам живёт в ОБЫЧНОМ, видимом всем контенте, а "вытеснился"
+  // из стека уже внутри outlook-конструкции. См. insertLineFor.
+  private conditionalCommentStartLines: number[] = [];
   // Имя тега РЕАЛЬНОГО (структурного) родителя текущей точки рендера —
   // не спутывать с currentUnclosedAncestor (тот — ближайший НЕЗАКРЫТЫЙ
   // предок, для утечки глубины). Обновляется вокруг рекурсии в детей
@@ -666,13 +702,22 @@ class Renderer {
   // реальным родителем его содержимого считается ближайший настоящий тег
   // снаружи.
   private currentParentTagName: string | null = null;
-  // Счётчик "подозрений" checkMissingParentGuard по имени тега — см. её
-  // же комментарий и REQUIRED_PARENT выше. Просто Map<имя, счётчик>, а не
-  // очередь объектов с insertBeforeLine/depth (как раньше у публичной
-  // диагностики UnopenedTagInfo): единственный потребитель —
-  // resolveStrayClose, которому нужен только факт "есть ли ещё
-  // непогашенное подозрение на этот тег", без деталей для UI.
-  private suspectedMissingParentCounts = new Map<string, number>();
+  // "Подозрения" checkMissingParentGuard — см. её же комментарий и
+  // REQUIRED_PARENT выше. Кроме имени пропущенного родителя запоминаем
+  // ГЛУБИНУ leak-стека на момент подозрения: без неё вето в
+  // resolveStrayClose было чисто глобальным (Map<имя, счётчик>) и гасило
+  // ПЕРВЫЙ ЖЕ встреченный дальше одноимённый "ничей" тег — где угодно по
+  // документу, в любой посторонней ветке. Одна осиротевшая ячейка в
+  // начале письма из-за этого ломала исправные Outlook-конструкции ниже,
+  // и ровно один к одному: N сирот — N испорченных конструкций.
+  //
+  // Глубина даёт вето точный смысл: гасить нужно только совпадение с
+  // тегом, который лежал в стеке ЕЩЁ ДО того, как подозрение возникло —
+  // то есть с посторонним, заведомо более ранним тегом (ровно этот
+  // случай вето и защищает: вырезанный <table> не должен закрывать
+  // далёкую чужую таблицу). Тег, открытый уже ПОСЛЕ подозрения, к нему
+  // отношения не имеет, и мешать его законному разрешению нельзя.
+  private suspectedMissingParents: { tagName: string; leakDepth: number }[] = [];
   // См. EmptyAttrGroup/findEmptyAttrNames/categorizeEmptyAttr выше — ключ
   // Map сохраняет порядок первой вставки (гарантия спецификации), так
   // что getEmptyAttrsToFill/getEmptyAttrsToDelete отдают группы в
@@ -977,10 +1022,7 @@ class Renderer {
     if (nearestLeak && validParents.includes(nearestLeak.tagName.toLowerCase())) return null;
     const required = validParents[0];
     if (runTag !== required) {
-      this.suspectedMissingParentCounts.set(
-        required,
-        (this.suspectedMissingParentCounts.get(required) ?? 0) + 1,
-      );
+      this.suspectedMissingParents.push({ tagName: required, leakDepth: this.leakStack.length });
     }
     return required;
   }
@@ -1057,19 +1099,154 @@ class Renderer {
     // Иначе, например, вырезанный <table> из-за этого фолбэка закрывал бы
     // случайную ДАЛЁКУЮ вложенную таблицу где-то ещё в документе вместо
     // того, чтобы честно остаться на месте, где реально пропал.
+    // Прежде чем включать вето ниже — проверяем НАСТОЯЩУЮ цепочку предков
+    // текущей точки рендера (currentUnclosedAncestor -> parentEntry -> ...).
+    // Если "ничей" закрывающий тег совпал по имени с одним из них, никакой
+    // догадки тут вообще нет: мы физически находимся ВНУТРИ содержимого
+    // этого тега прямо сейчас, и это гарантированно его пара.
+    //
+    // Реальный дефект, ради которого это появилось: вето ниже считает
+    // "подозрения" ГЛОБАЛЬНО, по одному лишь имени тега и без всякой
+    // привязки к месту в документе. Из-за этого одна осиротевшая ячейка
+    // где-нибудь в начале письма (<table><td>x</td></table> — потерян
+    // <tr>) отключала разрешение ПЕРВОГО же встреченного дальше "</tr>" —
+    // в том числе абсолютно исправного MSO-моста в другом конце
+    // документа. Ложные "незакрытые теги" при этом множились один к
+    // одному: N осиротевших ячеек — N испорченных конструкций ниже.
+    // Проверка по реальной цепочке предков не зависит ни от порядка в
+    // стеке, ни от посторонних подозрений и снимает ровно эти случаи, не
+    // трогая те, ради которых вето и вводилось (там совпавший тег лежит в
+    // СОСЕДНЕЙ ветке документа, а не на цепочке предков — см.
+    // регрессионный тест про вырезанный <table> в MSO-колонке).
+    const ancestorMatch = this.findAncestorChainMatch(tagName);
+    if (ancestorMatch !== null) return this.resolveMatchedEntry(ancestorMatch);
     const tagKey = tagName.toLowerCase();
-    const suspectedCount = this.suspectedMissingParentCounts.get(tagKey) ?? 0;
-    if (suspectedCount > 0) {
-      this.suspectedMissingParentCounts.set(tagKey, suspectedCount - 1);
+    const candidateIndex = this.findStrayCandidateIndex(tagName, () => true);
+    if (candidateIndex === -1) return null;
+    const suspicionIndex = this.suspectedMissingParents.findIndex((s) => s.tagName === tagKey);
+    if (suspicionIndex !== -1 && candidateIndex < this.suspectedMissingParents[suspicionIndex].leakDepth) {
+      // Кандидат лежал в стеке ещё ДО того, как возникло подозрение —
+      // значит, это посторонний, более ранний тег из другой части
+      // документа (см. suspectedMissingParents). Гасим подозрение и
+      // оставляем закрывающий тег по-настоящему "ничьим".
+      this.suspectedMissingParents.splice(suspicionIndex, 1);
       return null;
     }
-    return this.findAndResolveStray(tagName, () => true);
+    return this.resolveMatchedEntry(this.leakStack[candidateIndex]);
+  }
+
+  // Куда на самом деле нужно предложить дописать закрывающий тег для
+  // записи entry, если прямо сейчас она вытесняется из стека.
+  //
+  // Обычно это текущая строка. НО: если сам тег живёт в обычном, видимом
+  // ВСЕМ почтовым клиентам контенте (openedInConditionalComment === false),
+  // а вытесняется он уже ВНУТРИ outlook-конструкции, то текущая строка —
+  // это строка внутри <!--[if mso]>...<![endif]-->, которую видит ТОЛЬКО
+  // Outlook. Закрывающий тег, поставленный туда, для всех остальных
+  // клиентов не существует: тег как был незакрытым, так и остаётся, —
+  // при том что диагностика после такой "починки" показывает, что всё
+  // чисто. Поэтому точку вставки переносим ПЕРЕД самым внешним из сейчас
+  // открытых условных комментариев — там закрывающий тег увидят все.
+  //
+  // Все открытые сейчас комментарии заведомо начались ПОЗЖЕ самого тега
+  // (он открылся вне их всех), поэтому нужен именно самый внешний —
+  // элемент [0].
+  private insertLineFor(entry: LeakEntry): number {
+    if (
+      !entry.openedInConditionalComment &&
+      this.conditionalCommentStartLines.length > 0
+    ) {
+      return this.conditionalCommentStartLines[0];
+    }
+    return this.out.length;
+  }
+
+  // true, если предложенная для entry точка вставки (см. insertLineFor)
+  // и правда оказывается внутри условного комментария. Для тега из
+  // обычного контента это теперь всегда false — мы сознательно вынесли
+  // точку наружу.
+  private insertPointInsideConditionalComment(entry: LeakEntry): boolean {
+    if (!entry.openedInConditionalComment && this.conditionalCommentStartLines.length > 0) {
+      return false;
+    }
+    return this.conditionalCommentDepth > 0;
+  }
+
+  // Ближайший ещё не разрешённый предок с таким именем по НАСТОЯЩЕЙ
+  // цепочке вложенности дерева разбора (не по стеку). См. resolveStrayClose.
+  private findAncestorChainMatch(tagName: string): LeakEntry | null {
+    const needle = tagName.toLowerCase();
+    for (let cur = this.currentUnclosedAncestor; cur !== null; cur = cur.parentEntry) {
+      if (!cur.resolved && cur.tagName.toLowerCase() === needle) return cur;
+    }
+    return null;
+  }
+
+  // Помечает найденную запись разрешённой, фиксирует "попутную" точку
+  // вставки всему, что лежит в стеке ВЫШЕ неё, и обрезает стек.
+  //
+  // Всё, что было открыто ПОЗЖЕ найденного (индексы выше i), считается
+  // закрытым разом вместе с ним (см. комментарий класса выше), но сами
+  // эти записи по имени не "разрешились" — для подсказки "здесь пропущен
+  // тег" фиксируем им точку, где это попутно произошло, если она ещё не
+  // была зафиксирована раньше.
+  //
+  // Но "попутно" не всегда значит "ненадёжно": если запись k — по
+  // НАСТОЯЩЕМУ дереву разбора потомок найденного тега (проверяем по
+  // цепочке parentEntry, а не по совпадению чисел глубины — при сильно
+  // перепутанной разметке две совершенно не связанные ветки документа
+  // могут случайно идти подряд с монотонно растущей глубиной, это ничего
+  // не доказывает), то это ровно тот же случай, что и обычное закрытие
+  // предком — просто предок закрылся через "ничей" тег, а не через явный
+  // </tag>. Пример: <div><span>text</div> — единственный "</div>" в
+  // исходнике относится к div, а span — его настоящий прямой потомок,
+  // так что позиция вставки для span настолько же надёжна, как если бы
+  // div закрылся обычным образом. А если k — потомок какого-то СОВСЕМ
+  // ДРУГОГО, не относящегося к matched элемента (просто оказался рядом на
+  // стеке из-за путаницы в другом месте документа) — показывать точную
+  // позицию вставки как решённое нельзя.
+  private resolveMatchedEntry(matched: LeakEntry): number {
+    matched.resolved = true;
+    const i = this.leakStack.indexOf(matched);
+    // Запись с цепочки предков в норме всегда лежит и в стеке, но при
+    // сильно перепутанной разметке её могло вытеснить оттуда раньше —
+    // тогда просто отдаём её глубину, ничего не обрезая.
+    if (i === -1) return matched.popToDepth;
+    for (let k = i + 1; k < this.leakStack.length; k++) {
+      const collateral = this.leakStack[k];
+      if (!collateral) continue;
+      if (collateral.insertBeforeLine === Infinity) {
+        collateral.insertBeforeLine = this.insertLineFor(collateral);
+        collateral.closesInsideConditionalComment = this.insertPointInsideConditionalComment(collateral);
+        collateral.insertConfidence =
+          isDescendantOfEntry(collateral, matched) || isWrappedByOutlookBridge(collateral, matched)
+            ? "reliable"
+            : "uncertain";
+      }
+    }
+    this.leakStack.length = i;
+    return matched.popToDepth;
   }
 
   private findAndResolveStray(
     tagName: string,
     eligible: (entry: LeakEntry) => boolean,
   ): number | null {
+    const i = this.findStrayCandidateIndex(tagName, eligible);
+    if (i === -1) return null;
+    // "Попутная" точка вставки для всего, что было открыто ПОЗЖЕ
+    // найденного, проставляется внутри resolveMatchedEntry (см. там же
+    // разбор случаев про isDescendantOfEntry).
+    return this.resolveMatchedEntry(this.leakStack[i]);
+  }
+
+  // Индекс подходящей записи в leak-стеке БЕЗ каких-либо изменений
+  // состояния — чтобы вызывающая сторона могла сперва решить, стоит ли
+  // вообще принимать это совпадение (см. вето в resolveStrayClose).
+  private findStrayCandidateIndex(
+    tagName: string,
+    eligible: (entry: LeakEntry) => boolean,
+  ): number {
     for (let i = this.leakStack.length - 1; i >= 0; i--) {
       // this.leakStack[i] в норме никогда не бывает undefined (массив
       // либо растёт через push, либо укорачивается через это же
@@ -1083,46 +1260,10 @@ class Renderer {
         this.leakStack[i].tagName.toLowerCase() === tagName.toLowerCase() &&
         eligible(this.leakStack[i])
       ) {
-        const matched = this.leakStack[i];
-        matched.resolved = true;
-        const popToDepth = matched.popToDepth;
-        // Всё, что было открыто ПОЗЖЕ найденного (индексы выше i),
-        // считается закрытым разом вместе с ним (см. комментарий класса
-        // выше), но сами эти записи по имени не "разрешились" — для
-        // подсказки "здесь пропущен тег" фиксируем им точку, где это
-        // попутно произошло, если она ещё не была зафиксирована раньше.
-        //
-        // Но "попутно" не всегда значит "ненадёжно": если запись k — по
-        // НАСТОЯЩЕМУ дереву разбора потомок найденного тега (проверяем по
-        // цепочке parentEntry, а не по совпадению чисел глубины — при
-        // сильно перепутанной разметке две совершенно не связанные ветки
-        // документа могут случайно идти подряд с монотонно растущей
-        // глубиной, это ничего не доказывает), то это ровно тот же
-        // случай, что и обычное закрытие предком — просто предок закрылся
-        // через "ничей" тег, а не через явный </tag>. Пример:
-        // <div><span>text</div> — единственный "</div>" в исходнике
-        // относится к div, а span — его настоящий прямой потомок, так что
-        // позиция вставки для span настолько же надёжна, как если бы div
-        // закрылся обычным образом. А если k — потомок какого-то СОВСЕМ
-        // ДРУГОГО, не относящегося к matched элемента (просто оказался
-        // рядом на стеке из-за путаницы в другом месте документа) —
-        // показывать точную позицию вставки как решённое нельзя.
-        for (let k = i + 1; k < this.leakStack.length; k++) {
-          const collateral = this.leakStack[k];
-          if (!collateral) continue;
-          if (collateral.insertBeforeLine === Infinity) {
-            collateral.insertBeforeLine = this.out.length;
-            collateral.closesInsideConditionalComment = this.conditionalCommentDepth > 0;
-            collateral.insertConfidence = isDescendantOfEntry(collateral, matched)
-              ? "reliable"
-              : "uncertain";
-          }
-        }
-        this.leakStack.length = i;
-        return popToDepth;
+        return i;
       }
     }
-    return null;
+    return -1;
   }
 
   private renderBlockNode(node: Node): void {
@@ -1190,16 +1331,21 @@ class Renderer {
         }
 
         const d = this.depth;
+        // Строка САМОГО открывающего маркера — до pushLine, т.е. это его
+        // будущий индекс в this.out (см. conditionalCommentStartLines).
+        const openMarkerLine = this.out.length;
         this.pushLine(this.indent(d) + node.openRaw);
         this.depth = d + 1;
         this.conditionalCommentDepth++;
         this.conditionalCommentTextStack.push(node.openRaw);
+        this.conditionalCommentStartLines.push(openMarkerLine);
         // Отметка стека ДО рендера детей — нужна, чтобы отличить два
         // разных случая ниже (см. комментарий у проверки leakStack).
         const leakMark = this.leakStack.length;
         this.renderNodes(node.children);
         this.conditionalCommentDepth--;
         this.conditionalCommentTextStack.pop();
+        this.conditionalCommentStartLines.pop();
         // Если внутри всё аккуратно закрылось (глубина вернулась ровно к
         // d + 1, то есть к уровню собственного содержимого комментария),
         // закрывающий маркер выравниваем с открывающим — как обычный
@@ -1311,8 +1457,8 @@ class Renderer {
           for (let k = prunedFrom; k < this.leakStack.length; k++) {
             const pruned = this.leakStack[k];
             if (pruned && pruned.insertBeforeLine === Infinity) {
-              pruned.insertBeforeLine = this.out.length;
-              pruned.closesInsideConditionalComment = this.conditionalCommentDepth > 0;
+              pruned.insertBeforeLine = this.insertLineFor(pruned);
+              pruned.closesInsideConditionalComment = this.insertPointInsideConditionalComment(pruned);
             }
           }
           this.leakStack.length = prunedFrom;
@@ -1443,8 +1589,8 @@ class Renderer {
           for (let k = prunedFrom; k < this.leakStack.length; k++) {
             const pruned = this.leakStack[k];
             if (pruned && pruned.insertBeforeLine === Infinity) {
-              pruned.insertBeforeLine = this.out.length;
-              pruned.closesInsideConditionalComment = this.conditionalCommentDepth > 0;
+              pruned.insertBeforeLine = this.insertLineFor(pruned);
+              pruned.closesInsideConditionalComment = this.insertPointInsideConditionalComment(pruned);
             }
           }
           this.leakStack.length = prunedFrom;

@@ -687,20 +687,30 @@ test("группировка незакрытых тегов: два НЕ свя
   );
 });
 
-test("группировка незакрытых тегов: uncertain-запись не считается частью цепочки reliable-соседей, вся группа тоже uncertain", () => {
+test("insertConfidence: остаётся uncertain, когда родства не видно ни по дереву, ни по ghost-таблице", () => {
+  // Обе стороны открыты ВНУТРИ условных комментариев и при этом не связаны
+  // родством — приём ghost-таблиц тут ни при чём (см.
+  // isWrappedByOutlookBridge: он про случай "обёртка в комментарии, а
+  // содержимое снаружи"). Гадать о точной позиции вставки в такой
+  // путанице по-прежнему нельзя.
   const input = [
+    "<div>",
+    "<!--[if mso]></div><![endif]-->",
     "<!--[if mso]>",
-    "<a>",
-    "<![endif]-->",
-    "<c>sibling never closed",
+    "<!--[if mso]><div><![endif]-->",
+    "<!--[if mso]><div><![endif]-->",
+    "<span>",
+    "<!--[if mso]></div><![endif]-->",
     "<!--[if mso]>",
-    "</a>",
-    "<![endif]-->",
+    "text",
   ].join("\n");
-  const { unclosedTagGroups } = formatHtmlWithDiagnostics(input);
-  assert.equal(unclosedTagGroups.length, 1);
-  assert.equal(unclosedTagGroups[0].insertConfidence, "uncertain");
-  assert.equal(unclosedTagGroups[0].needsConditionalCommentWrap, false);
+  const { unclosedTagGroups } = formatHtmlWithDiagnostics(input, {
+    cleanServiceAttrs: false,
+    typografy: false,
+  });
+  const span = unclosedTagGroups.find((g) => g.tags[0].tagName === "span");
+  assert.ok(span, "тег <span> должен попасть в диагностику");
+  assert.equal(span.insertConfidence, "uncertain");
 });
 
 test("формат: formatHtml по-прежнему возвращает просто строку (обратная совместимость)", () => {
@@ -722,14 +732,16 @@ test("не падает на сильно перепутанной размет�
   assert.doesNotThrow(() => formatHtmlWithDiagnostics(input));
 });
 
-test("insertConfidence: попутно вытесненный тег из СОВСЕМ ДРУГОЙ, не связанной ветки документа помечается uncertain, а не reliable", () => {
-  // <a> открывается в одном условном комментарии (типичный MSO-приём) и
-  // резолвится позже "ничьим" </a> из второго условного комментария. Между
-  // ними — независимый от <a> элемент верхнего уровня <c>, тоже незакрытый.
-  // <c> НЕ является потомком <a> (это просто сосед по стеку "утёкших"
-  // тегов) — то, что резолвинг <a> попутно вытесняет и его, не делает
-  // предполагаемое место вставки для <c> надёжным: настоящая пара для <c>
-  // может обнаружиться где угодно ещё, а может и не обнаружиться вовсе.
+test("insertConfidence: тег внутри ghost-таблицы Outlook получает reliable — обёртка ему настоящий предок, просто не по дереву", () => {
+  // Приём ghost-таблиц: <a> открыт ВНУТРИ условного комментария, а
+  // видимое содержимое (<c>) лежит СНАРУЖИ него. По дереву разбора они
+  // соседи (комментарий — отдельный узел), поэтому обычная проверка
+  // "потомок ли" родства не видит. Но в отрисованном письме <c> находится
+  // именно внутри <a>, и точка, где <a> закрывается, — ровно то место,
+  // где закрылся бы и <c>. Раньше такой тег получал uncertain: ни серой
+  // строки-подсказки, ни кнопки "Добавить?" — хотя позиция вычислялась
+  // верная (реальный случай из письма: единственный незакрытый <div>
+  // внутри ghost-колонки). См. isWrappedByOutlookBridge.
   const input = [
     "<!--[if mso]>",
     "<a>",
@@ -739,10 +751,17 @@ test("insertConfidence: попутно вытесненный тег из СОВ
     "</a>",
     "<![endif]-->",
   ].join("\n");
-  const { unclosedTags } = formatHtmlWithDiagnostics(input);
+  const { html, unclosedTags } = formatHtmlWithDiagnostics(input);
   assert.deepEqual(unclosedTags, [
-    { line: 3, tagName: "c", insertBeforeLine: 6, depth: 2, insertConfidence: "uncertain" },
+    { line: 3, tagName: "c", insertBeforeLine: 5, depth: 2, insertConfidence: "reliable" },
   ]);
+  // Точка вставки — ПЕРЕД открывающим маркером outlook-конструкции, а не
+  // внутри неё: сам <c> живёт в обычном контенте, видимом всем почтовым
+  // клиентам, и закрывающий тег для него обязан быть виден им же. Раньше
+  // сюда подставлялась строка </a> ВНУТРИ <!--[if mso]>...<![endif]-->:
+  // после такой "починки" <c> оставался незакрытым везде, кроме Outlook,
+  // а диагностика при этом показывала, что всё чисто (см. insertLineFor).
+  assert.match(html.split("\n")[5], /^\s*<!--\[if mso\]>$/);
 });
 
 test("пропущенный </tr> глубоко внутри обычного контента не флагует попутно закрывающиеся ancestor-теги (регрессия по реальному MSO-письму)", () => {
@@ -1217,15 +1236,35 @@ test("регрессия: непарная кавычка в href НЕ лома�
 test("регрессия: если непарная кавычка так и не находит вообще никакой пары, предохранитель обрывает разбор тега на границе следующего тега, а не глотает остаток документа", () => {
   const input = `<div><a href="never closes<span>real content</span></div>`;
   const { html, unclosedTags } = formatHtmlWithDiagnostics(input, { cleanServiceAttrs: false });
+  // ">" у оборванного тега НЕ дорисовывается (см. ElementNode.unterminated
+  // и openTagString): в исходнике его не было вовсе, и форматтер не
+  // выдумывает символы — он меняет только отступы.
   assert.equal(
     html,
-    ['<div>', '  <a href="never closes>', "    <span>real content</span>", "</div>"].join("\n"),
+    ["<div>", '  <a href="never closes', "    <span>real content</span>", "</div>"].join("\n"),
   );
   // <a> сам по себе честно остаётся незакрытым (в этом примере у него и
   // впрямь нет закрывающего тега) — это уже штатная, доверенная
   // диагностика, а не 31 посторонний ложный тег где-то дальше по письму.
   assert.equal(unclosedTags.length, 1);
   assert.equal(unclosedTags[0].tagName, "a");
+});
+
+test("регрессия: оборванный тег без ">" не отращивает по лишнему ">" на каждом повторном форматировании (порча содержимого письма)", () => {
+  // Реальный дефект: форматтер безусловно дописывал ">" в конец
+  // открывающего тега, даже когда в исходнике его не было (разбор
+  // атрибутов оборвался предохранителем на незакрытой кавычке). Каждый
+  // следующий прогон брал этот дописанный ">" уже как часть значения
+  // атрибута и дописывал ещё один: broken> -> broken>> -> broken>>> ...
+  // Текст письма тихо рос при каждом нажатии "Переформатировать".
+  const input = `<table><tr><td><a href="broken><img></a></td></tr></table>`;
+  const once = formatHtml(input, { cleanServiceAttrs: false });
+  const twice = formatHtml(once, { cleanServiceAttrs: false });
+  const thrice = formatHtml(twice, { cleanServiceAttrs: false });
+  assert.equal(once, twice);
+  assert.equal(twice, thrice);
+  // И сам символ не размножился: ровно столько же ">", сколько в исходнике.
+  assert.equal((once.match(/>/g) || []).length, (input.match(/>/g) || []).length);
 });
 
 test("диагностика кавычек: незакрытая (значение начинается с кавычки, но не находит пары — 'проглотило' соседний атрибут)", () => {
@@ -1545,4 +1584,233 @@ test("подсчёт очистки служебных атрибутов: не�
     typografy: false,
   });
   assert.deepEqual(removedServiceItems, []);
+});
+
+// ===================================================================
+// Калибровка движка диагностики незакрытых тегов. Каждый тест ниже —
+// РЕАЛЬНЫЙ дефект, найденный на письмах пользователя и на сплошном
+// прогоне инвариантов (см. tests/invariants.test.ts): ложные "незакрытые
+// теги", вина не на том теге, неверная точка вставки и тихая порча
+// содержимого письма при повторном форматировании.
+// ===================================================================
+
+test("незакрытый <a> не проглатывает соседний <td>: поломка остаётся на месте дефекта", () => {
+  // Реальный дефект из письма (блок иконок соцсетей): у одной иконки
+  // потеряли </a> и </td>. Инлайн-элемент не может содержать <td> ни при
+  // каких условиях (см. matchesInlineTableBoundary в parser.ts) — раньше
+  // незакрытый <a> забирал следующий <td> себе в дети, а за ним и чужие
+  // </tr>/</table> на сотни строк вперёд.
+  const input = [
+    "<table><tr>",
+    '<td><a href="u1">',
+    "<img>",
+    '<td><a href="u2"><img></a></td>',
+    "</tr></table>",
+  ].join("\n");
+  const { unclosedTagGroups } = formatHtmlWithDiagnostics(input, {
+    cleanServiceAttrs: false,
+    typografy: false,
+  });
+  // Ровно одна группа — сам дефект: незакрытые <td> и вложенный в него <a>.
+  assert.equal(unclosedTagGroups.length, 1);
+  assert.deepEqual(
+    unclosedTagGroups[0].tags.map((t) => t.tagName),
+    ["td", "a"],
+  );
+});
+
+test("незакрытый тег ВНУТРИ ячейки не забирает себе </div> внешнего контейнера (виноват правильный тег, точка вставки — рядом)", () => {
+  // Раньше matchesAncestorClose безусловно пропускал td/tr/table как
+  // "неоднозначные" предки, поэтому незакрытый <div> внутри ячейки
+  // пробегал мимо </td></tr></table> и присваивал себе </div> ВНЕШНЕГО
+  // контейнера: виноватым объявлялся внешний div, а вставить закрывающий
+  // тег предлагалось в противоположном конце документа.
+  const input = [
+    '<div class="outer">',
+    "<table><tr><td>",
+    '<div class="btn">Click',
+    "</td></tr></table>",
+    "</div>",
+    "<p>footer</p>",
+  ].join("\n");
+  const { html, unclosedTagGroups } = formatHtmlWithDiagnostics(input, {
+    cleanServiceAttrs: false,
+    typografy: false,
+  });
+  const lines = html.split("\n");
+  assert.equal(unclosedTagGroups.length, 1);
+  assert.equal(unclosedTagGroups[0].tags.length, 1);
+  const flagged = unclosedTagGroups[0].tags[0];
+  assert.equal(flagged.tagName, "div");
+  // Виноват именно ВНУТРЕННИЙ div, а не внешний из строки 0.
+  assert.match(lines[flagged.line], /class="btn"/);
+  // И закрыть его предлагается прямо перед </td>, а не в конце документа.
+  assert.match(lines[unclosedTagGroups[0].insertBeforeLine], /^\s*<\/td>$/);
+  // Внешний контейнер при этом остался закрытым, а футер — на нулевой
+  // глубине, а не уехал внутрь таблицы.
+  assert.ok(lines.includes("<p>footer</p>"), "футер должен остаться на верхнем уровне");
+});
+
+test("незакрытый <style> внутри условного комментария не дублирует хвост документа на каждом прогоне", () => {
+  // Критический дефект: findClosingTagIndex искал </style> по ВСЕМУ
+  // остатку исходника, не замечая границу "<![endif]-->". Разбор уезжал
+  // за конец условного комментария, parseComment откатывал позицию
+  // НАЗАД — и весь хвост письма разбирался и печатался второй раз. При
+  // каждом следующем форматировании — ещё раз (64 -> 144 -> 196 -> ...).
+  const input = `<!--[if mso]><style>a{}<![endif]--><p>tail</p><style>b{}</style>`;
+  const once = formatHtml(input, { cleanServiceAttrs: false, typografy: false });
+  const twice = formatHtml(once, { cleanServiceAttrs: false, typografy: false });
+  assert.equal(once, twice);
+  // "tail" встречается ровно один раз, а не размножился.
+  assert.equal(once.split("tail").length - 1, 1);
+});
+
+test("вложенный revealed-комментарий не обрывает внешний условный комментарий (и не дублирует хвост)", () => {
+  // Шаблон "<![endif]-->" — подстрока закрывающей конструкции
+  // revealed-варианта "<!--<![endif]-->". Без отдельной проверки внешний
+  // комментарий "заканчивался" на закрывающей конструкции ВЛОЖЕННОГО
+  // revealed-комментария, и всё, что после неё, разбиралось дважды.
+  const input = `<!--[if mso]><div><!--[if !mso]><!--><p>x</p><!--<![endif]--></div><![endif]--><p>tail</p>`;
+  const once = formatHtml(input, { cleanServiceAttrs: false, typografy: false });
+  const twice = formatHtml(once, { cleanServiceAttrs: false, typografy: false });
+  assert.equal(once, twice);
+  assert.equal(once.split("tail").length - 1, 1);
+});
+
+test("незакрытый обычный комментарий внутри условного не выходит за его границу", () => {
+  const input = `<!--[if mso]><p><!-- note <![endif]--><p>tail</p>`;
+  const once = formatHtml(input, { cleanServiceAttrs: false, typografy: false });
+  const twice = formatHtml(once, { cleanServiceAttrs: false, typografy: false });
+  assert.equal(once, twice);
+  assert.equal(once.split("tail").length - 1, 1);
+});
+
+test("символ '<' внутри закавыченного значения атрибута — законный: ни фантомных тегов, ни правки текста", () => {
+  // Раньше предохранитель "<" + буква срабатывал на ЛЮБОМ "<" внутри
+  // кавычек, даже когда кавычка спокойно закрывается в этом же теге:
+  // валидный HTML переписывался, а в диагностике появлялся фантомный
+  // тег <y>. Теперь предохранитель срабатывает только если пара у
+  // кавычки находится уже ЗА концом тега (см. quoteClosesInsideThisTag).
+  for (const input of [
+    `<div onclick="if(x<y)f()">z</div>`,
+    `<div title='a<b'>x</div>`,
+    `<div title="a < 5">x</div>`,
+  ]) {
+    const { html, unclosedTagGroups } = formatHtmlWithDiagnostics(input, {
+      cleanServiceAttrs: false,
+      typografy: false,
+    });
+    assert.deepEqual(unclosedTagGroups, [], `ложная диагностика на ${input}`);
+    assert.equal(html, input, `валидный HTML не должен переписываться: ${input}`);
+  }
+});
+
+test("предохранитель по-прежнему срабатывает на ПО-НАСТОЯЩЕМУ убежавшей кавычке", () => {
+  // Контроль к предыдущему тесту: исходная защита (ради которой
+  // предохранитель и появился) обязана продолжать работать.
+  const input = `<div title="a><span>y</span></div>`;
+  const { html } = formatHtmlWithDiagnostics(input, {
+    cleanServiceAttrs: false,
+    typografy: false,
+  });
+  // Разбор оборвался на границе следующего тега, а не проглотил остаток.
+  assert.match(html, /<span>/);
+  const twice = formatHtml(html, { cleanServiceAttrs: false, typografy: false });
+  assert.equal(html, twice);
+});
+
+test("осиротевшая ячейка в начале письма не отключает разрешение исправных конструкций дальше", () => {
+  // Вето suspectedMissingParents раньше считалось ГЛОБАЛЬНО, по одному
+  // имени тега: один <table><td>x</td></table> (потерян <tr>) гасил
+  // ПЕРВЫЙ ЖЕ встреченный дальше "</tr>" — включая совершенно исправный
+  // MSO-мост в другом конце документа. Ложные срабатывания множились
+  // один к одному: N сирот — N испорченных конструкций.
+  const block = ["<table>", "<tr>", "<td>b</td>", "<!--[if mso]></tr></table><![endif]-->"].join("\n");
+  for (const orphans of [0, 1, 2, 3]) {
+    const input = "<table><td>x</td></table>\n".repeat(orphans) + block;
+    const { unclosedTagGroups } = formatHtmlWithDiagnostics(input, {
+      cleanServiceAttrs: false,
+      typografy: false,
+    });
+    assert.deepEqual(
+      unclosedTagGroups,
+      [],
+      `${orphans} осиротевших ячеек не должны ломать исправный MSO-мост`,
+    );
+  }
+});
+
+test("вето по пропущенному родителю всё ещё защищает вырезанный <table> (контроль к предыдущему тесту)", () => {
+  // Обратная сторона: подозрение обязано продолжать гасить совпадение с
+  // тегом, который лежал в стеке ЕЩЁ ДО его возникновения — иначе
+  // осиротевший </table> снова начнёт утаскивать чужую MSO-таблицу.
+  const input = [
+    "<!--[if mso]>",
+    "<table><tr><td>",
+    "<![endif]-->",
+    "<div>",
+    "<tr><td>content</td></tr>",
+    "</table>",
+    "</div>",
+    "<!--[if mso]>",
+    "</td></tr></table>",
+    "<![endif]-->",
+  ].join("\n");
+  const { unclosedTagGroups } = formatHtmlWithDiagnostics(input, {
+    cleanServiceAttrs: false,
+    typografy: false,
+  });
+  assert.deepEqual(unclosedTagGroups, []);
+});
+
+test("точка вставки закрывающего тега не попадает внутрь outlook-конструкции", () => {
+  // Тег живёт в обычном контенте, а вытесняется из стека уже внутри
+  // <!--[if mso]>...<![endif]-->. Раньше закрывающий тег предлагалось
+  // дописать ПРЯМО ТУДА — для всех клиентов, кроме Outlook, тег оставался
+  // незакрытым, а диагностика после принятия подсказки показывала, что
+  // документ чист.
+  const input = [
+    "<!--[if mso]><table><tr><td><![endif]-->",
+    "<div>",
+    "<p>x</p>",
+    "<!--[if mso]></td></tr></table><![endif]-->",
+  ].join("\n");
+  const { html, unclosedTagGroups } = formatHtmlWithDiagnostics(input, {
+    cleanServiceAttrs: false,
+    typografy: false,
+  });
+  assert.equal(unclosedTagGroups.length, 1);
+  const lines = html.split("\n");
+  const at = unclosedTagGroups[0].insertBeforeLine;
+  // Строка вставки — сам открывающий маркер условного комментария, то
+  // есть закрывающий тег встанет ПЕРЕД ним, в обычном контенте.
+  assert.match(lines[at], /^\s*<!--\[if mso\]>$/);
+  // И подсказка не предлагает заворачивать его в новую MSO-обёртку.
+  assert.equal(unclosedTagGroups[0].needsConditionalCommentWrap, false);
+});
+
+test("<![endif]--> не размножается при вложенных условных комментариях", () => {
+  // Поиск закрывающего маркера не считал вложенность: внешний комментарий
+  // "заканчивался" на маркере ВЛОЖЕННОГО, потреблял его, и всё равно
+  // дописывал свой — маркеров на выходе становилось больше, чем на входе,
+  // и с каждым форматированием ещё больше (93 -> 174 -> 195 -> 216 ...).
+  // Ломалась при этом совершенно законная вёрстка.
+  const cases = [
+    `<!--[if mso]><!--[if mso]><![endif]-->`,
+    `<!--[if mso]><table><tr><td> <!--[if lte mso 11]>x<![endif]--> </td></tr></table><![endif]-->`,
+    `<!--[if mso]><table><tr><td>\n<div>a</div>\n<!--[if mso]></td></tr></table><![endif]-->\n<p>tail</p>`,
+  ];
+  for (const input of cases) {
+    const once = formatHtml(input, { cleanServiceAttrs: false, typografy: false });
+    const twice = formatHtml(once, { cleanServiceAttrs: false, typografy: false });
+    const thrice = formatHtml(twice, { cleanServiceAttrs: false, typografy: false });
+    assert.equal(once, twice, `неидемпотентно: ${input}`);
+    assert.equal(twice, thrice, `неидемпотентно: ${input}`);
+    // Маркеров на выходе ровно столько же, сколько на входе.
+    assert.equal(
+      (once.match(/<!\[endif\]-->/g) || []).length,
+      (input.match(/<!\[endif\]-->/g) || []).length,
+      `число <![endif]--> изменилось: ${input}`,
+    );
+  }
 });

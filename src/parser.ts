@@ -135,6 +135,31 @@ const IMPLICIT_CLOSE_ON_SIBLING: Record<string, Set<string>> = {
 // matchesAncestorClose её нужно исключать отдельно, своим набором.
 const AMBIGUOUS_ANCESTOR_NAMES = new Set([...Object.keys(IMPLICIT_CLOSE_ON_SIBLING), "table"]);
 
+// Повторяющиеся ДЕТИ (в отличие от самой <table>): у них одноимённый
+// предок выше по дереву — обычное дело, но при этом они не образуют
+// собственного "уровня-обёртки", который мог бы пропасть целиком. См.
+// ambiguousHereBecauseDeeperSameName.
+const REPEATABLE_CHILD_NAMES = new Set(Object.keys(IMPLICIT_CLOSE_ON_SIBLING));
+
+// Теги структуры таблицы, которые НИКОГДА не могут лежать внутри
+// инлайн-элемента (<a>, <span>, <b>, <font>, ...) — ни по спецификации,
+// ни по поведению любого реального браузера. Специально БЕЗ самой
+// <table>: она как раз может законно лежать внутри <a> (у <a>
+// "прозрачная" модель содержимого, и <a><table>...</table></a> —
+// валидная разметка, часто встречающаяся в письмах). См.
+// matchesInlineTableBoundary ниже.
+const TABLE_STRUCTURAL_TAGS = new Set([
+  "tr",
+  "td",
+  "th",
+  "tbody",
+  "thead",
+  "tfoot",
+  "caption",
+  "colgroup",
+  "col",
+]);
+
 // Ключевые слова конструкций шаблонизатора Mindbox внутри "@{...}" —
 // см. MindboxBlockNode/MindboxStatementNode/StrayMindboxEndNode в
 // types.ts и правила форматирования, согласованные с пользователем.
@@ -241,6 +266,10 @@ class Parser {
       }
 
       if (stopTag && this.matchesImplicitClose(stopTag, this.pos)) {
+        break;
+      }
+
+      if (stopTag && this.matchesInlineTableBoundary(stopTag, this.pos)) {
         break;
       }
 
@@ -385,6 +414,38 @@ class Parser {
     return closers.has(newTagName.toLowerCase());
   }
 
+  // true, если мы сейчас разбираем содержимое ИНЛАЙН-элемента (<a>,
+  // <span>, <b>, <font>, ...), а в позиции pos начинается тег структуры
+  // таблицы (<td>/<tr>/... или </td>/</tr>/..., см. TABLE_STRUCTURAL_TAGS).
+  // Такой тег не может быть содержимым инлайн-элемента ни при каких
+  // условиях — значит, инлайн-элемент здесь ЗАКОНЧИЛСЯ (браузер закрыл бы
+  // его неявно), и разбор его детей нужно оборвать. Это тот же принцип,
+  // что и у matchesImplicitClose (см. её комментарий), только сигнал
+  // приходит не от конфликтующего соседа того же типа, а от заведомо
+  // невозможного вложения.
+  //
+  // Реальный дефект, ради которого это появилось (письмо пользователя):
+  // в блоке иконок соцсетей у одной из иконок потеряли </a> и </td>:
+  //   <td><a href="t.me/..."><img>
+  //   <td><a href="max.ru/..."><img></a></td>
+  // Без этой проверки незакрытый <a> "проглатывал" следующий <td> как
+  // своего ребёнка, а дальше — и чужие </tr>/</table> на сотни строк
+  // вперёд. Из-за этого один маленький дефект в футере письма всплывал
+  // ложной диагностикой "незакрытый Outlook-комментарий" совсем в другом
+  // месте документа (строки 214-216, самое начало письма) — причём только
+  // при ПОВТОРНОМ форматировании, когда исчезали <tbody>, случайно
+  // обрывавшие это проглатывание. Теперь поломка остаётся ровно там, где
+  // она есть в исходнике: незакрытыми числятся сам <a> и его <td>, и
+  // больше ничего.
+  private matchesInlineTableBoundary(stopTag: string, pos: number): boolean {
+    if (!isInlineElement(stopTag)) return false;
+    if (this.src[pos] !== "<") return false;
+    const afterBracket = this.src[pos + 1] === "/" ? pos + 2 : pos + 1;
+    const nameMatch = TAG_NAME_RE.exec(this.src.slice(afterBracket));
+    if (!nameMatch) return false;
+    return TABLE_STRUCTURAL_TAGS.has(nameMatch[0].toLowerCase());
+  }
+
   // true, если в позиции pos начинается закрывающий тег, совпадающий с
   // каким-нибудь предком ВЫШЕ текущего stopTag (последнего элемента
   // openAncestors — для него уже есть отдельная проверка matchesClosingTag
@@ -411,10 +472,66 @@ class Parser {
   // положенного, утаскивая за собой всё письмо). Без совпадения тут тег
   // просто останется "ничьим" (см. resolveStrayClose на рендере) — куда
   // безопаснее, чем неверная догадка.
+  // УТОЧНЕНИЕ к AMBIGUOUS_ANCESTOR_NAMES: сама по себе "многоуровневость"
+  // имени (tr/td/table/li/...) делает предка ненадёжной подсказкой только
+  // тогда, когда ГЛУБЖЕ него прямо сейчас открыт ЕЩЁ ОДИН тег с тем же
+  // именем — только в этом случае непонятно, которому из них принадлежит
+  // встреченный закрывающий тег. Если же одноимённых потомков ниже нет,
+  // никакой неоднозначности не существует: "</td>" при единственном
+  // открытом <td> — это ровно его закрывающий тег, и притворяться, что мы
+  // не знаем этого, вредно.
+  //
+  // Реальный дефект (найден на письме пользователя): незакрытый <div>
+  // ВНУТРИ ячейки таблицы пробегал мимо "</td></tr></table>" (все три
+  // имени безусловно пропускались как "неоднозначные") и забирал себе
+  // "</div>" ВНЕШНЕГО контейнера. В итоге виноватым объявлялся не тот
+  // тег, точка вставки указывала в противоположный конец документа, а всё
+  // содержимое после дефекта уезжало на чужой уровень вложенности.
+  private ambiguousHereBecauseDeeperSameName(index: number): boolean {
+    const name = this.openAncestors[index].toLowerCase();
+    if (!AMBIGUOUS_ANCESTOR_NAMES.has(name)) return false;
+    // <table> остаётся "неоднозначным предком" БЕЗУСЛОВНО, в отличие от
+    // повторяющихся детей (tr/td/th/li/...). Причина несимметрии: у
+    // вырезанного <table> пропадает целый УРОВЕНЬ вложенности, и его
+    // осиротевший </table> внешне неотличим от закрывающего тега
+    // настоящего внешнего <table> — считать его "однозначным" только
+    // потому, что глубже нет второй одноимённой таблицы, нельзя: именно
+    // так осиротевший </table> и утаскивал за собой внешнюю таблицу,
+    // разрывая вложенность всего остатка письма (см. регрессионный тест
+    // про вырезанный <table> в многоуровневой вложенности). У
+    // повторяющихся детей такой потери уровня не происходит.
+    if (!REPEATABLE_CHILD_NAMES.has(name)) return true;
+    for (let k = index + 1; k < this.openAncestors.length; k++) {
+      if (this.openAncestors[k].toLowerCase() === name) return true;
+    }
+    return false;
+  }
+
+  // "Область видимости таблицы" (в спецификации HTML — table scope):
+  // закрывающий тег структуры таблицы (</tr>, </td>, ...) НИКОГДА не может
+  // относиться к предку, между которым и текущей точкой есть ещё одна
+  // <table>. Внутри вложенной таблицы "ничей" </tr> принадлежит ЕЙ (её
+  // вырезанной строке), а не одноимённой строке внешней таблицы —
+  // вложенная таблица полностью экранирует внешнюю.
+  //
+  // Без этого ограничения "ничей" </tr> вложенной таблицы (типичный след
+  // вручную вырезанной строки) закрывал бы <tr> ВНЕШНЕЙ таблицы двумя
+  // уровнями выше: внешняя строка закрывалась слишком рано, а остаток
+  // вложенной таблицы всплывал наружу как её сосед. См. соответствующий
+  // регрессионный тест.
+  private outOfTableScope(index: number): boolean {
+    if (!TABLE_STRUCTURAL_TAGS.has(this.openAncestors[index].toLowerCase())) return false;
+    for (let k = index + 1; k < this.openAncestors.length; k++) {
+      if (this.openAncestors[k].toLowerCase() === "table") return true;
+    }
+    return false;
+  }
+
   private matchesAncestorClose(pos: number): boolean {
     for (let i = this.openAncestors.length - 2; i >= 0; i--) {
       const name = this.openAncestors[i];
-      if (AMBIGUOUS_ANCESTOR_NAMES.has(name.toLowerCase())) continue;
+      if (this.outOfTableScope(i)) continue;
+      if (this.ambiguousHereBecauseDeeperSameName(i)) continue;
       if (this.matchesClosingTag(name, pos)) return true;
     }
     return false;
@@ -525,6 +642,96 @@ class Parser {
     return { type: "doctype", raw: this.src.slice(start, this.pos) };
   }
 
+  // Граница, дальше которой текущий разбор заходить не имеет права —
+  // конец ближайшего объемлющего условного комментария (см. activeStops).
+  // Всё, что ищет свою "пару" простым indexOf по остатку исходника
+  // (незакрытый комментарий, <style>/<script> без закрывающего тега),
+  // ОБЯЗАНО ограничиваться ею: иначе такой поиск перепрыгивает через
+  // "<![endif]-->" и уводит this.pos ЗА конец комментария, а parseComment
+  // потом откатывает позицию НАЗАД — и весь кусок документа от
+  // "<![endif]-->" до конца разбирается ВТОРОЙ раз, дублируясь в выводе
+  // (и дублируясь снова на каждом следующем форматировании).
+  // Уточнение к предохранителю "<" внутри значения атрибута (см.
+  // parseElement): сам по себе "<" — совершенно законный символ внутри
+  // закавыченного значения, и по спецификации разбор значения на нём не
+  // прерывается. Обрывать разбор нужно только если кавычка и правда
+  // "убежала" — то есть её пара находится уже ЗА концом этого тега.
+  // this.pos сейчас указывает на "<".
+  //
+  // Различаем два случая по тому, что встретится раньше — закрывающая
+  // кавычка или ">":
+  //   <div onclick="if(x<y)f()">  — кавычка РАНЬШЕ ">", значение
+  //     нормально закрывается внутри своего же тега, обрывать нечего
+  //     (раньше здесь появлялся фантомный тег <y> на полностью валидном
+  //     HTML, а сам JS в атрибуте переписывался);
+  //   <a href="broken><img></a>   — ">" РАНЬШЕ (тег уже закончился), пары
+  //     у кавычки в пределах тега нет — вот это настоящий убегающий
+  //     случай, здесь предохранитель и нужен.
+  // Условие строго уже прежнего: всё, что обрывалось раньше по делу,
+  // обрывается и сейчас — просто перестали страдать валидные значения.
+  private quoteClosesInsideThisTag(quoteChar: string): boolean {
+    const closingQuote = this.src.indexOf(quoteChar, this.pos);
+    if (closingQuote === -1) return false;
+    const tagEnd = this.src.indexOf(">", this.pos);
+    return tagEnd === -1 || closingQuote < tagEnd;
+  }
+
+  private currentStopLimit(): number {
+    return this.activeStops.length > 0
+      ? this.activeStops[this.activeStops.length - 1]
+      : this.src.length;
+  }
+
+  // Ищет закрывающий маркер ИМЕННО ЭТОГО условного комментария, СЧИТАЯ
+  // вложенность: каждый встреченный по дороге "<!--[if ...]>" — это чужой,
+  // вложенный комментарий, и ближайший "<![endif]-->" принадлежит ЕМУ, а
+  // не нам.
+  //
+  // Без подсчёта вложенности внешний комментарий "заканчивался" на
+  // ПЕРВОМ же "<![endif]-->", который на деле принадлежал вложенному.
+  // Дальше этот же маркер потреблял вложенный комментарий, а внешний всё
+  // равно дописывал свой нормализованный "<![endif]-->" — на выходе
+  // маркеров становилось на один больше, чем на входе. При следующем
+  // форматировании — ещё на один, и так без предела. Ломалась при этом
+  // совершенно ЗАКОННАЯ и частая в письмах вложенность, например
+  // <!--[if mso]><table><tr><td> <!--[if lte mso 11]>…<![endif]--> </td></tr></table><![endif]-->.
+  //
+  // Возвращает позицию и длину найденного маркера (не RegExpExecArray —
+  // для revealed/обычного варианта длина может отличаться от длины самого
+  // совпадения, см. ниже), либо null, если своего маркера в исходнике нет
+  // вовсе.
+  private findConditionalCommentClose(revealed: boolean): { index: number; length: number } | null {
+    // Один сканер сразу на три вида маркеров. Порядок альтернатив важен:
+    // "<!--<![endif]-->" должен проверяться РАНЬШЕ голого "<![endif]-->",
+    // иначе голый вариант совпал бы с хвостом revealed-варианта.
+    const scanner = /<!--\s*\[if\b[^\]]*\]\s*>|<!--\s*<!\[endif\]\s*-->|<!\[endif\]\s*-->/gi;
+    scanner.lastIndex = this.pos;
+    let depth = 0;
+    let match: RegExpExecArray | null;
+    while ((match = scanner.exec(this.src)) !== null) {
+      const text = match[0];
+      if (!/endif/i.test(text)) {
+        depth++;
+        continue;
+      }
+      if (depth > 0) {
+        depth--;
+        continue;
+      }
+      const isRevealedForm = text.startsWith("<!--");
+      if (!revealed && isRevealedForm) {
+        // Нам нужен голый "<![endif]-->", а на этом месте стоит
+        // revealed-вариант без парного revealed-открытия. Забираем только
+        // его хвост, оставив "<!--" содержимому — так число маркеров на
+        // входе и на выходе совпадает.
+        const offset = text.indexOf("<![endif]");
+        return { index: match.index + offset, length: text.length - offset };
+      }
+      return { index: match.index, length: text.length };
+    }
+    return null;
+  }
+
   private parseComment(): CommentNode | ConditionalCommentNode {
     const start = this.pos;
     this.pos += 4; // пропускаем "<!--"
@@ -533,10 +740,14 @@ class Parser {
     const isConditional = /^\s*\[if\b/.test(rest);
 
     if (!isConditional) {
+      const limit = this.currentStopLimit();
       const end = this.src.indexOf("-->", this.pos);
-      if (end === -1) {
-        const raw = this.src.slice(this.pos);
-        this.pos = this.src.length;
+      // "-->" не нашлось вовсе ЛИБО нашлось уже за границей объемлющего
+      // условного комментария (в реальности это "-->" от самого
+      // "<![endif]-->") — комментарий обрываем ровно на границе.
+      if (end === -1 || end > limit) {
+        const raw = this.src.slice(this.pos, limit);
+        this.pos = limit;
         return { type: "comment", raw };
       }
       const raw = this.src.slice(this.pos, end);
@@ -574,13 +785,15 @@ class Parser {
     // разбита переносами/отступами между частями — ищем её целиком через
     // regex по остатку исходника, а не пошаговым сканированием, чтобы не
     // потерять границу.
-    const closePattern = revealed ? /<!--\s*<!\[endif\]\s*-->/gi : /<!\[endif\]\s*-->/gi;
-    closePattern.lastIndex = this.pos;
-    const closeMatch = closePattern.exec(this.src);
+    const closeMatch = this.findConditionalCommentClose(revealed);
     const normalizedCloseRaw = revealed ? "<!--<![endif]-->" : "<![endif]-->";
 
     if (closeMatch === null) {
-      // Не нашли закрывающий маркер — деградируем, забирая всё до конца.
+      // Не нашли СВОЙ закрывающий маркер — деградируем, забирая всё до
+      // конца. closeRaw пустой: маркера в исходнике не было, и выдумывать
+      // его нельзя (иначе на выходе маркеров окажется больше, чем на
+      // входе, и на следующем прогоне ещё больше — см.
+      // findConditionalCommentClose).
       const children = this.parseNodes();
       return { type: "conditional-comment", openRaw, closeRaw: "", children };
     }
@@ -592,8 +805,16 @@ class Parser {
     this.activeStops.push(closeMatch.index);
     const children = this.parseNodes();
     this.activeStops.pop();
+    const closeEnd = closeMatch.index + closeMatch.length;
 
-    this.pos = closeMatch.index + closeMatch[0].length;
+    // Math.max — страховка на уровне структуры: что бы ни случилось при
+    // разборе детей, позиция НИКОГДА не должна поехать назад. Откат назад
+    // означал бы повторный разбор уже разобранного куска документа, то
+    // есть тихое дублирование содержимого письма (и повторное удвоение
+    // при каждом следующем форматировании). Отдельные причины такого
+    // отката вылечены точечно (см. currentStopLimit), но цена ошибки тут
+    // слишком высока, чтобы полагаться только на это.
+    this.pos = Math.max(this.pos, closeEnd);
     return { type: "conditional-comment", openRaw, closeRaw: normalizedCloseRaw, children };
   }
 
@@ -634,7 +855,7 @@ class Parser {
         // проглатывая остаток документа целиком. Сам факт непарной
         // кавычки отдельно ловит диагностика (см. findQuoteIssues в
         // formatter.ts) — здесь только защита структуры дерева.
-        if (c === "<" && /[a-zA-Z]/.test(this.src[this.pos + 1] ?? "")) {
+        if (c === "<" && /[a-zA-Z]/.test(this.src[this.pos + 1] ?? "") && !this.quoteClosesInsideThisTag("'")) {
           break;
         }
         this.pos++;
@@ -646,7 +867,7 @@ class Parser {
           this.pos++;
           continue;
         }
-        if (c === "<" && /[a-zA-Z]/.test(this.src[this.pos + 1] ?? "")) {
+        if (c === "<" && /[a-zA-Z]/.test(this.src[this.pos + 1] ?? "") && !this.quoteClosesInsideThisTag('"')) {
           break;
         }
         this.pos++;
@@ -703,21 +924,14 @@ class Parser {
         voidElement,
         inline,
         explicitlyClosed: true,
+        unterminated: !foundRealGt,
         children: [],
       };
       return el;
     }
 
     if (isRawTextElement(tagName)) {
-      const closeIdx = this.findClosingTagIndex(tagName);
-      const rawContent =
-        closeIdx === -1 ? this.src.slice(this.pos) : this.src.slice(this.pos, closeIdx);
-      if (closeIdx === -1) {
-        this.pos = this.src.length;
-      } else {
-        this.pos = closeIdx;
-        this.consumeClosingTag();
-      }
+      const rawContent = this.consumeRawContentUntilClose(tagName);
       const node: RawTextElementNode = {
         type: "raw-text",
         tagName,
@@ -728,15 +942,7 @@ class Parser {
     }
 
     if (isStyleElement(tagName)) {
-      const closeIdx = this.findClosingTagIndex(tagName);
-      const rawContent =
-        closeIdx === -1 ? this.src.slice(this.pos) : this.src.slice(this.pos, closeIdx);
-      if (closeIdx === -1) {
-        this.pos = this.src.length;
-      } else {
-        this.pos = closeIdx;
-        this.consumeClosingTag();
-      }
+      const rawContent = this.consumeRawContentUntilClose(tagName);
       const node: StyleElementNode = {
         type: "style",
         tagName,
@@ -766,9 +972,33 @@ class Parser {
       voidElement: false,
       inline,
       explicitlyClosed,
+      unterminated: !foundRealGt,
       children,
     };
     return el;
+  }
+
+  // Содержимое <script>/<pre>/<textarea>/<style> — сырой текст до своего
+  // закрывающего тега. Если закрывающего тега нет ВООБЩЕ либо он лежит
+  // уже ЗА границей объемлющего условного комментария (см.
+  // currentStopLimit), содержимое обрывается ровно на этой границе, а не
+  // тянется до конца документа: иначе такой незакрытый <style> внутри
+  // <!--[if mso]>...<![endif]--> проглатывал бы сам маркер "<![endif]-->"
+  // вместе с остатком письма как CSS, а this.pos уезжал бы за конец
+  // комментария — после чего parseComment откатывал позицию назад и весь
+  // хвост документа разбирался и печатался ВТОРОЙ раз.
+  private consumeRawContentUntilClose(tagName: string): string {
+    const limit = this.currentStopLimit();
+    const closeIdx = this.findClosingTagIndex(tagName);
+    if (closeIdx === -1 || closeIdx > limit) {
+      const rawContent = this.src.slice(this.pos, limit);
+      this.pos = limit;
+      return rawContent;
+    }
+    const rawContent = this.src.slice(this.pos, closeIdx);
+    this.pos = closeIdx;
+    this.consumeClosingTag();
+    return rawContent;
   }
 
   private findClosingTagIndex(tagName: string): number {
