@@ -47,6 +47,45 @@
     return flag ? flag.row : null;
   }
 
+  // Строка, от которой отсчитывается "следующая" подсказка (см.
+  // jumpToNextSuggestion): серая строка-подсказка этой группы, а если её
+  // нет (ненадёжная точка вставки — серую строку для такой группы не
+  // рисуем) — строка её открывающего тега. Считать ДО изменения текста:
+  // после перерисовки этой группы в списках уже не будет.
+  function currentSuggestionRow(g) {
+    const close = lastCloseFlags.find((f) => f.groupUid === g.__uid);
+    if (close) return close.row;
+    const open = lastOpenFlags.find((f) => f.uid === g.tags[0].__uid);
+    return open ? open.row : -1;
+  }
+
+  // Перепрыгнуть на СЛЕДУЮЩУЮ неразобранную подсказку — разобравшись с
+  // одним незакрытым тегом, пользователь почти всегда идёт к следующему
+  // такому же, и искать его глазами по всему письму не нужно (см. запрос
+  // пользователя).
+  //
+  // Прыгаем ТОЛЬКО на ПРЕДЛОЖЕННЫЕ (серые) строки и никогда на реальные
+  // открывающие теги: серая строка — это место, где ещё предстоит принять
+  // решение, а открывающий тег сам по себе никакого действия не требует.
+  // Группы с ненадёжной точкой вставки серой строки не имеют, поэтому в
+  // lastCloseFlags не попадают и в обход не включаются — это то же
+  // правило, а не отдельное исключение.
+  //
+  // Вызывать ПОСЛЕ перерисовки: lastCloseFlags к этому моменту содержит
+  // только оставшиеся подсказки. Не осталось ничего — никуда не двигаемся
+  // (статус закрыт, прыгать некуда).
+  //
+  // fromRow — строка, с которой пользователь только что ушёл: ищем
+  // ближайшую подсказку НИЖЕ неё, чтобы идти по документу сверху вниз, а
+  // не возвращаться к началу. Если ниже пусто — заходим на второй круг с
+  // самой верхней.
+  function jumpToNextSuggestion(fromRow) {
+    const rows = lastCloseFlags.map((f) => f.row).sort((a, b) => a - b);
+    if (rows.length === 0) return;
+    const next = rows.find((r) => r > fromRow);
+    scrollRowIntoView(next !== undefined ? next : rows[0]);
+  }
+
   // Готовые строки текста (без HTML-разметки — то, что реально уходит в
   // lastCleanHtml, в отличие от подсвеченной версии в buildDisplayHtml) —
   // закрывающие теги группы от самого внутреннего к самому внешнему,
@@ -88,10 +127,12 @@
   // сам reformatAfterAllResolved не прыгает скроллом (см. applyFormatResult
   // с scrollToBottom=false), так что для пользователя разница не заметна.
   function acceptGroupSuggestion(g) {
+    const fromRow = currentSuggestionRow(g);
     const lines = lastCleanHtml.split("\n");
     lines.splice(g.insertBeforeLine, 0, ...buildGroupInsertLines(g));
     lastCleanHtml = lines.join("\n");
     reformatAfterAllResolved();
+    jumpToNextSuggestion(fromRow);
   }
 
   // Пользователь отклонил ЛЮБОЙ из двух попапов группы ("Добавить?" ИЛИ
@@ -116,9 +157,11 @@
   // lastCleanHtml при отклонении не меняется, значит и переформатировать
   // заново нечего.
   function rejectGroupSuggestion(g) {
+    const fromRow = currentSuggestionRow(g);
     workingTags = workingTags.filter((e) => e.__uid !== g.__uid);
     rejectedCount += g.tags.length;
     renderOutput();
+    jumpToNextSuggestion(fromRow);
   }
 
   // Пользователь подтвердил ОБЩЕЕ удаление для ВСЕЙ группы: убираем
@@ -137,6 +180,7 @@
   // acceptGroupSuggestion — гарантированно верные новые группы вместо
   // ручного пересчёта.
   function acceptGroupDeletion(g) {
+    const fromRow = currentSuggestionRow(g);
     const lines = lastCleanHtml.split("\n");
     const linesToRemove = g.tags.map((t) => t.line).sort((a, b) => b - a);
     for (const lineIndex of linesToRemove) {
@@ -144,4 +188,5 @@
     }
     lastCleanHtml = lines.join("\n");
     reformatAfterAllResolved();
+    jumpToNextSuggestion(fromRow);
   }

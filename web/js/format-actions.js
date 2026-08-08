@@ -209,9 +209,45 @@
     // повторный прогон форматтера его не меняет (идемпотентность —
     // отдельно проверяется в tests/invariants.test.ts), так что строки
     // свежей диагностики совпадают со строками на экране.
+    const before = countQuoteIssues(lastUnclosedQuoteAttrs, lastUnopenedQuoteAttrs);
     lastUnclosedQuoteAttrs = unclosedQuoteAttrs;
     lastUnopenedQuoteAttrs = unopenedQuoteAttrs;
     renderOutput();
+    // Одной кавычкой стало меньше — перепрыгиваем на следующую (см.
+    // jumpToNextQuoteIssue). Именно "стало меньше", а не просто "есть
+    // что показать": перепроверка запускается на КАЖДОЙ паузе в наборе,
+    // пока в письме остаётся хоть одна проблемная кавычка, и прыгать на
+    // каждую такую паузу — значит дёргать экран, пока человек просто
+    // печатает.
+    if (countQuoteIssues(unclosedQuoteAttrs, unopenedQuoteAttrs) < before) {
+      jumpToNextQuoteIssue();
+    }
+  }
+
+  function countQuoteIssues(unclosed, unopened) {
+    return (
+      unclosed.reduce((sum, g) => sum + g.locations.length, 0) +
+      unopened.reduce((sum, g) => sum + g.locations.length, 0)
+    );
+  }
+
+  // Перепрыгнуть на следующую оставшуюся проблемную кавычку — зеркало
+  // jumpToNextSuggestion для незакрытых тегов (см. popup-actions.js): та
+  // же мысль, что закрыв одну, пользователь идёт к следующей такой же.
+  // Последнюю починили — прыгать некуда, остаёмся на месте (статус и так
+  // закроется сам, см. ветку выше с полным переформатированием).
+  //
+  // Отсчитываем от строки, где сейчас стоит курсор: правку пользователь
+  // только что сделал именно там, так что "следующая" — это ближайшая
+  // НИЖЕ неё. Ниже пусто — заходим на второй круг с самой верхней.
+  function jumpToNextQuoteIssue() {
+    const lines = [...lastUnclosedQuoteAttrs, ...lastUnopenedQuoteAttrs]
+      .flatMap((g) => g.locations.map((loc) => loc.line))
+      .sort((a, b) => a - b);
+    if (lines.length === 0) return;
+    const caretLine = lastCleanHtml.slice(0, outputEditor.selectionStart).split("\n").length - 1;
+    const next = lines.find((line) => line > caretLine);
+    handleQuoteIssueLineClick(next !== undefined ? next : lines[0]);
   }
   outputEditor.addEventListener("scroll", () => {
     output.scrollTop = outputEditor.scrollTop;
