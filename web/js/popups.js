@@ -142,18 +142,22 @@
   // создаёт их содержимое.
   //
   // На каждую ГРУППУ (см. workingTags/UnclosedTagGroup в src/formatter.ts)
-  // строится:
-  // - ОДИН попап "Добавить?" у серой подсказки (общий на всю группу, даже
-  //   если тегов в ней несколько) — с линиями-указателями сразу к
-  //   ПЕРВОМУ и ПОСЛЕДНЕМУ тегу группы (см. запрос пользователя), а не к
-  //   самой подсказке: "место проблемы" и "место починки" могут оказаться
-  //   далеко друг от друга по документу.
-  // - По ОДНОМУ попапу "Удалить?" на КАЖДЫЙ тег группы, у самого места
-  //   его открытия (см. .unclosed-open-anchor/buildDisplayHtml) — в
-  //   отличие от "Добавить?" эта сторона осталась независимой по тегам:
-  //   удалить можно любой из открывающих тегов по отдельности, это не
-  //   единое действие (в отличие от вставки закрывающих — см. запрос
-  //   пользователя, который явно про ОДНО общее предложение добавления).
+  // строится ровно ДВА попапа — симметрично, один на каждое возможное
+  // действие, и у ОБОИХ линии-указатели идут к ПЕРВОМУ и ПОСЛЕДНЕМУ
+  // элементу, актуальному именно для ЭТОГО действия (реальный баг,
+  // найденный пользователем: раньше "Удалить?" был по одному попапу НА
+  // КАЖДЫЙ тег группы вместо одного общего, а "Добавить?" указывал на
+  // реальные открывающие теги вместо предлагаемых закрывающих строк):
+  // - "Добавить?" — рядом с серой подсказкой (там же, где предложенные
+  //   закрывающие теги физически появятся), указатели — на ПЕРВУЮ и
+  //   ПОСЛЕДНЮЮ из ПРЕДЛОЖЕННЫХ (серых) строк группы: это и есть то, что
+  //   добавится, если нажать "✓".
+  // - "Удалить?" — рядом с местом, где реально открылся первый тег
+  //   группы, указатели — на ПЕРВЫЙ и ПОСЛЕДНИЙ РЕАЛЬНЫЙ открывающий тег
+  //   группы (.unclosed-open-anchor): это и есть то, что удалится.
+  // Оба попапа принимают/отклоняют ВСЮ группу целиком, единым действием
+  // (см. acceptGroupSuggestion/acceptGroupDeletion/rejectGroupSuggestion в
+  // popup-actions.js) — не по одному тегу за раз.
   function renderPopups() {
     outputPopups.innerHTML = "";
     const wrapRect = output.parentElement.getBoundingClientRect();
@@ -197,41 +201,94 @@
       return popup;
     }
 
-    // Маленькая серая строка снизу попапа со ссылкой на строку ПАРНОГО
-    // тега, чтобы не искать её глазами по всему выводу — см. pairLabelFor:
-    // у попапа на РЕАЛЬНОМ, уже существующем в письме теге (сам unclosed
-    // на своём месте открытия) парный тег ЕЩЁ НЕ существует — потому "не
-    // найден"; у попапа на ПРЕДЛОЖЕННОМ (пока не принятом) теге парный,
-    // наоборот, уже реально есть в письме — потому "найден".
-    function appendPairInfo(popup, row, label) {
-      if (row == null) return;
+    // Маленькая серая строка снизу попапа со ссылками на строку(-и)
+    // ПАРНОГО тега (или, для группы из нескольких тегов — первого И
+    // последнего сразу, см. вызовы ниже), чтобы не искать их глазами по
+    // всему выводу, особенно в плотной разметке, где сами линии-
+    // указатели на попапе разглядеть трудно (см. запрос пользователя —
+    // реальный случай, когда рядом много вложенных тегов подряд). rows —
+    // МАССИВ (0..2 элемента, null-значения пропускаются) — см.
+    // pairLabelFor: у попапа на РЕАЛЬНОМ, уже существующем в письме теге
+    // (сам unclosed на своём месте открытия) парный тег ЕЩЁ НЕ существует
+    // — потому "не найден"; у попапа на ПРЕДЛОЖЕННОМ (пока не принятом)
+    // теге парный, наоборот, уже реально есть в письме — потому "найден".
+    // showWhenEmpty — показывать строку, даже если ссылаться не на что.
+    // Так бывает ровно в одном случае: попап "Удалить?" у группы с
+    // insertConfidence === "uncertain". Серую строку-подсказку для таких
+    // групп мы сознательно не рисуем (см. buildDisplayHtml), значит нет и
+    // её флажка, а значит и номера строки, на который можно сослаться.
+    // Раньше строка в этом случае просто НЕ появлялась, и такой тег
+    // выглядел "беднее" соседей без всякого объяснения (реальный запрос
+    // пользователя: "у незакрытого div не предлагается подсказка с его
+    // парным тегом"). Теперь вместо молчания честно пишем, что пары нет
+    // вовсе — это и есть ответ на вопрос "а где она?".
+    function appendPairInfo(popup, rows, label, showWhenEmpty) {
+      // По возрастанию номера строки, а не в порядке следования тегов
+      // группы — у "Удалить?" второй (внутренний) тег группы закрывается
+      // в предложении РАНЬШЕ первого (внешнего) — см. buildGroupInsertLines
+      // в popup-actions.js, закрывающие теги идут от внутреннего к
+      // внешнему — так что "первый тег, последний тег" в document order
+      // может дать номера строк в обратном порядке. Без сортировки это
+      // выглядело бы как опечатка (например, "1320, 1319").
+      const validRows = rows.filter((row) => row != null).sort((a, b) => a - b);
+      if (validRows.length === 0 && !showWhenEmpty) return;
       const pairInfo = document.createElement("div");
       pairInfo.className = "suggest-popup-pair";
+      if (validRows.length === 0) {
+        // Тот же текст, что и обычно, только без хвостового ": " — без
+        // номеров он читается как законченная фраза ("Не найден
+        // закрывающий тег").
+        pairInfo.textContent = label.replace(/:\s*$/, "");
+        popup.appendChild(pairInfo);
+        return;
+      }
       pairInfo.appendChild(document.createTextNode(label));
-      const pairLink = document.createElement("span");
-      pairLink.className = "suggest-popup-pair-link";
-      pairLink.textContent = String(row + 1);
-      pairLink.addEventListener("click", () => scrollRowIntoView(row));
-      pairInfo.appendChild(pairLink);
+      validRows.forEach((row, i) => {
+        if (i > 0) pairInfo.appendChild(document.createTextNode(", "));
+        const pairLink = document.createElement("span");
+        pairLink.className = "suggest-popup-pair-link";
+        pairLink.textContent = String(row + 1);
+        pairLink.addEventListener("click", () => scrollRowIntoView(row));
+        pairInfo.appendChild(pairLink);
+      });
       popup.appendChild(pairInfo);
     }
 
+    // Первый/последний элемент массива (уже в DOM-порядке — оба
+    // источника, .querySelectorAll и g.tags, идут в порядке появления в
+    // документе) — если их всего один (группа из одного тега), вторая
+    // цель попросту совпадает с первой, вызывающая сторона сама это
+    // учитывает (см. firstAndLastRects/firstAndLastOf).
+    function firstAndLastRects(rects) {
+      if (rects.length === 0) return [];
+      const first = rects[0];
+      const last = rects[rects.length - 1];
+      return first === last ? [first] : [first, last];
+    }
+    // То же самое, но для ЛЮБОГО массива (см. g.tags) — используется,
+    // чтобы получить ровно те же "граничные" элементы, к которым ведут
+    // линии-указатели (см. firstAndLastRects выше), и для них же
+    // построить ссылки в appendPairInfo.
+    function firstAndLastOf(arr) {
+      if (arr.length === 0) return [];
+      const first = arr[0];
+      const last = arr[arr.length - 1];
+      return first === last ? [first] : [first, last];
+    }
+
     for (const g of workingTags) {
-      if (g.insertConfidence !== "reliable") continue;
+      const first = g.tags[0];
 
-      // === "Добавить?" — один общий попап на всю группу ===
-      const suggestEls = output.querySelectorAll(`[data-group-uid="${g.__uid}"]`);
+      // === "Добавить?" — один общий попап, указатели на ПРЕДЛОЖЕННЫЕ (серые) строки ===
+      // Только для insertConfidence === "reliable" — как и у самой серой
+      // подсказки (см. buildDisplayHtml/insertions): предлагать КОНКРЕТНОЕ
+      // место вставки, в котором мы не уверены, вводит в заблуждение.
+      // "Удалить?" ниже НЕ зависит от этого — у него другая, объективная
+      // и всегда точно известная цель (см. её же комментарий).
+      const suggestEls = g.insertConfidence === "reliable" ? [...output.querySelectorAll(`[data-group-uid="${g.__uid}"]`)] : [];
       if (suggestEls.length > 0) {
-        const placementRects = [...suggestEls].map((el) => el.getBoundingClientRect());
-        if (placementRects.some(isRectVisible)) {
-          const first = g.tags[0];
-          const last = g.tags[g.tags.length - 1];
-          const openEls = [first, last === first ? null : last]
-            .filter(Boolean)
-            .map((t) => output.querySelector(`.unclosed-open-anchor[data-uid="${t.__uid}"]`))
-            .filter(Boolean);
-          const tagRects = openEls.length > 0 ? openEls.map((el) => el.getBoundingClientRect()) : placementRects;
-
+        const suggestRects = suggestEls.map((el) => el.getBoundingClientRect());
+        if (suggestRects.some(isRectVisible)) {
           const acceptTitle =
             g.tags.length > 1
               ? "Добавить все закрывающие теги группы в результат"
@@ -244,35 +301,52 @@
             () => acceptGroupSuggestion(g),
             () => rejectGroupSuggestion(g),
           );
-          // Ссылку на парную строку показываем только для одиночного тега
-          // (как и раньше) — у группы из нескольких тегов "парных" строк
-          // сразу несколько, а обе цели и так уже видны по линиям-
-          // указателям на сам попап.
-          if (g.tags.length === 1) {
-            appendPairInfo(popup, pairedRow(first), pairLabelFor(first, false));
-          }
+          // У группы из нескольких тегов — сразу ДВЕ ссылки (первый и
+          // последний тег группы, те же границы, к которым ведут линии-
+          // указатели), а не одна: обе цели и так видны по указателям, но
+          // в плотной разметке проследить линию глазами трудно (реальный
+          // случай, см. запрос пользователя), а кликабельный номер строки
+          // — нет.
+          const boundary = firstAndLastOf(g.tags);
+          appendPairInfo(
+            popup,
+            boundary.map((t) => pairedRow(t)),
+            pairLabelFor(first, false, boundary.length > 1),
+          );
           outputPopups.appendChild(popup);
-          entries.push({ el: popup, placementRects, tagRects });
+          entries.push({ el: popup, placementRects: suggestRects, tagRects: firstAndLastRects(suggestRects) });
         }
       }
 
-      // === "Удалить?" — по одному попапу на каждый тег группы ===
-      for (const t of g.tags) {
-        const openEl = output.querySelector(`.unclosed-open-anchor[data-uid="${t.__uid}"]`);
-        if (!openEl) continue;
-        const tagRect = openEl.getBoundingClientRect();
-        if (!isRectVisible(tagRect)) continue;
-
-        const tagText = isMindboxConstruct(t.tagName) ? mindboxOpenLabel(t.tagName) : `<${t.tagName}>`;
-        const popup = buildPopupShell(
-          "Удалить?",
-          `Удалить ${tagText} из результата`,
-          () => acceptTagDeletion(t, g),
-          () => rejectTagDeletion(t, g),
-        );
-        appendPairInfo(popup, pairedRowForOpenSide(t), pairLabelFor(t, true));
-        outputPopups.appendChild(popup);
-        entries.push({ el: popup, placementRects: [tagRect], tagRects: [tagRect] });
+      // === "Удалить?" — тоже один общий попап на группу, указатели на РЕАЛЬНЫЕ открывающие теги ===
+      const openEls = g.tags
+        .map((t) => output.querySelector(`.unclosed-open-anchor[data-uid="${t.__uid}"]`))
+        .filter(Boolean);
+      if (openEls.length > 0) {
+        const openRects = openEls.map((el) => el.getBoundingClientRect());
+        if (openRects.some(isRectVisible)) {
+          const acceptTitle =
+            g.tags.length > 1
+              ? "Удалить все открывающие теги группы из результата"
+              : isMindboxConstruct(first.tagName)
+                ? `Удалить ${mindboxOpenLabel(first.tagName)} из результата`
+                : `Удалить <${first.tagName}> из результата`;
+          const popup = buildPopupShell(
+            "Удалить?",
+            acceptTitle,
+            () => acceptGroupDeletion(g),
+            () => rejectGroupSuggestion(g),
+          );
+          const boundary = firstAndLastOf(g.tags);
+          appendPairInfo(
+            popup,
+            boundary.map((t) => pairedRowForOpenSide(t)),
+            pairLabelFor(first, true, boundary.length > 1),
+            true,
+          );
+          outputPopups.appendChild(popup);
+          entries.push({ el: popup, placementRects: openRects, tagRects: firstAndLastRects(openRects) });
+        }
       }
     }
     positionSuggestPopups(entries, wrapRect);

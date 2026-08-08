@@ -175,7 +175,16 @@
     // ещё печатает) — lastCleanHtml к этому моменту уже синхронизирован
     // с ним самим же input-обработчиком выше, так что просто перепроверяем
     // актуальное состояние, а не то, что было на момент планирования.
-    if (!lastCleanHtml.trim()) return;
+    // Пользователь стёр вывод целиком — считать нечего, но и оставлять
+    // плашку с диагностикой уже несуществующего текста нельзя (раньше её
+    // в этом случае глушила проверка outputEditedManually, теперь плашка
+    // живёт своей жизнью — см. updateQuoteIssuesStatus).
+    if (!lastCleanHtml.trim()) {
+      lastUnclosedQuoteAttrs = [];
+      lastUnopenedQuoteAttrs = [];
+      updateQuoteIssuesStatus();
+      return;
+    }
     const { unclosedQuoteAttrs, unopenedQuoteAttrs } = window.HtmlFormatter.formatHtmlWithDiagnostics(
       lastCleanHtml,
       {
@@ -186,7 +195,23 @@
     );
     if (unclosedQuoteAttrs.length === 0 && unopenedQuoteAttrs.length === 0) {
       reformatAfterAllResolved();
+      return;
     }
+    // Исправлены не все — полностью переформатировать нельзя (пользователь
+    // ещё правит текст, и переразметка увела бы у него курсор), но и
+    // оставлять плашку с УСТАРЕВШИМИ данными тоже нельзя: часть кавычек
+    // уже починена. Забираем свежие списки и перерисовываем — так плашка
+    // показывает ровно то, что осталось, а подсветка самих кавычек в
+    // выводе (см. applyQuoteIssueHighlights внутри renderOutput) перестаёт
+    // помечать уже исправленные места.
+    //
+    // Номера строк тут точные: в выводе лежит уже отформатированный текст,
+    // повторный прогон форматтера его не меняет (идемпотентность —
+    // отдельно проверяется в tests/invariants.test.ts), так что строки
+    // свежей диагностики совпадают со строками на экране.
+    lastUnclosedQuoteAttrs = unclosedQuoteAttrs;
+    lastUnopenedQuoteAttrs = unopenedQuoteAttrs;
+    renderOutput();
   }
   outputEditor.addEventListener("scroll", () => {
     output.scrollTop = outputEditor.scrollTop;

@@ -131,8 +131,8 @@
      (editor/output-wrap) должно быть одной и той же высоты в обеих
      карточках, а кнопки "Форматировать"/"Скопировать" — стоять на одном
      уровне, хотя количество и высота контента НИЖЕ кнопки в двух
-     карточках разные (options-row — три ряда чекбоксов, status-plates-row
-     — одна строка, которая к тому же то пустая, то нет). flex с
+     карточках разные (options-row — три ряда чекбоксов, status-dashboard
+     — чипы/карточки, которых к тому же то нет вовсе, то много). flex с
      независимыми колонками так не умеет: каждая карточка сама решала бы,
      сколько места оставить editor'у, исходя из СВОЕГО собственного
      контента снизу. Grid-строки же общие на весь main — 1fr у editor-
@@ -150,7 +150,7 @@
   .card {
     /* Каждая карточка — сама тоже grid, subgrid по строкам: её 4 прямых
        ребёнка (card-label/editor.output-wrap/card-footer/options-row·
-       status-plates-row) занимают ровно те же 4 строки, что заданы у
+       status-dashboard) занимают ровно те же 4 строки, что заданы у
        main — тогда их высоты берутся из ОБЩИХ (shared) grid-треков, а не
        считаются отдельно для каждой колонки. */
     grid-row: 1 / span 4;
@@ -188,56 +188,187 @@
     text-transform: uppercase;
     color: var(--label);
   }
-  /* Сводки под кнопкой "Скопировать" (см. updateOutputStatus/
-     updateEmptyAttrsStatus в скрипте) — сейчас их может быть до двух в
-     ряд (незакрытые/лишние теги и, отдельно, пустые атрибуты), поэтому
-     margin-top живёт на самом РЯДУ, а не на отдельных плашках. :has() —
-     чтобы не тащить пустой отступ, когда обе плашки пустые (ничего не
-     нашли/проверки выключены). Значение то же самое, что и у отступа
-     чекбоксов от "Форматировать" (.options-row ниже) — два симметричных
-     "второй ряд под главной кнопкой", отступ у них обязан совпадать. */
-  .status-plates-row {
+  /* ==========================================================
+     Статус-дэшборд под "Скопировать" (см. status-plates.js) — два яруса:
+     .status-chip-row — минималистичные чипы ("всё ок" и статистика без
+     действия, галочка + опциональный синий "?" с попапом), .status-card-grid
+     — карточки для того, что реально требует внимания (незакрытые теги/
+     кавычки, пустые атрибуты). outputStatus/emptyAttrsFillStatus физически
+     ПЕРЕЕЗЖАЮТ между ярусами (см. reparentStatusEl) — у них два разных
+     состояния ("всё ок" — чип, "есть проблема" — карточка), а не два
+     фиксированных элемента. margin-top — на всём .status-dashboard, а не
+     на отдельных ярусах, чтобы не задваивать отступ, когда видны оба.
+     :has() — тот же приём, что и раньше: без него пустой (проверки
+     выключены/всё чисто) дэшборд тянул бы за собой пустой отступ.
+     Значение — то же самое, что у отступа чекбоксов от "Форматировать"
+     (.options-row ниже) — оба "второй ряд под главной кнопкой" обязаны
+     совпадать. */
+  .status-dashboard {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  .status-dashboard:has(.status-chip:not(:empty), .status-card:not(:empty)) {
+    margin-top: 24px;
+  }
+  .status-chip-row, .status-card-grid {
     display: flex;
     flex-wrap: wrap;
     align-items: flex-start;
     gap: 10px;
   }
-  .status-plates-row:has(.status-plate:not(:empty)) {
-    margin-top: 24px;
+  /* Ярус целиком схлопывается, если в нём не осталось ни одного видимого
+     элемента (все :empty) — иначе даже без единого чипа/карточки внутри
+     сам пустой flex-ряд всё равно был бы "item" для .status-dashboard
+     выше и вставлял бы gap:14px в никуда. */
+  .status-chip-row:not(:has(.status-chip:not(:empty))),
+  .status-card-grid:not(:has(.status-card:not(:empty))) {
+    display: none;
   }
-  /* В стиле тех же плашек-чекбоксов слева (.option-plate) — единый
-     визуальный язык для "второстепенной строки под основным действием"
-     на обеих карточках. */
-  .status-plate {
+  /* display:none у ПУСТОГО чипа/карточки, а не просто обнуление padding/
+     border — иначе он всё равно остаётся flex-item и вставляет gap перед
+     следующим соседом, будто первого элемента нет, а щель от него осталась. */
+  .status-chip:empty, .status-card:empty {
+    display: none;
+  }
+
+  /* --- Чип: "Теги сбалансированы" / статистика с попапом --- */
+  .status-chip {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 6px;
     width: fit-content;
-    padding: 10px 14px;
-    border-radius: var(--radius-sm);
-    font-size: 13px;
+    padding: 8px 12px;
+    border-radius: 999px;
+    font-size: 12.5px;
     font-weight: 600;
     background: var(--field-bg);
     border: 1px solid var(--field-border);
+    /* Наведение на статус — не текст для выделения, а просто плашка;
+       без этого браузер по умолчанию показывает текстовый курсор
+       (I-балка) над текстом внутри. Кликабельные исключения (номер
+       строки, кнопка "?") сами переопределяют курсор на pointer. */
+    cursor: default;
   }
-  /* display:none, а не просто обнуление padding/border — .status-plates-row
-     это flex-ряд с gap, и даже визуально схлопнутый (padding:0;border:none)
-     пустой элемент всё равно СЧИТАЕТСЯ отдельным flex-item: gap между ним
-     и соседней плашкой всё равно вставлялся бы, и следующая плашка
-     оказывалась бы сдвинута от левого края на этот gap, хотя выглядит,
-     будто первой плашки нет вовсе. */
-  .status-plate:empty {
-    display: none;
+  /* Кнопка "?" (см. .status-chip-info ниже) — обычный <button>, а кнопки
+     по умолчанию не наследуют шрифт окружения (классическая особенность
+     UA-стилей форменных элементов), из-за чего её строчный бокс чуть выше
+     24px иконки внутри — с тем же padding:8px 12px, что и у чипов без
+     кнопки, это добавляет лишние 2px высоты и чипы визуально скачут в
+     ряду. Компенсируем на 1px с каждой стороны — ровно те же 2px обратно
+     (проверено: 34px у обычного чипа, было 36px у чипа с кнопкой, с этой
+     правкой — тоже 34px).*/
+  .status-chip:has(.status-chip-info) { padding: 7px 12px; }
+  .status-chip-ok { border-color: var(--accent-secondary); }
+  /* Зелёный статус — красим и текст тоже, не только иконку-галочку (см.
+     запрос пользователя). */
+  .status-chip-ok .status-chip-label { color: var(--ok-text); }
+  .status-chip-icon { flex-shrink: 0; display: flex; }
+  /* Отступ между галочкой и "?" чуть теснее общего gap:6px чипа (см.
+     запрос пользователя) — тянем кнопку навстречу иконке отрицательным
+     отступом, не трогая общий gap (тот же самый gap ещё и держит отступ
+     "?" → подпись, его мы не уменьшаем). */
+  .status-chip-icon + .status-chip-info { margin-left: -3px; }
+  .status-chip-label { color: var(--text); }
+  /* Кнопка "?" — статистика есть, но действие не требуется (типограф,
+     очистка лишнего кода): подробности спрятаны в попап (см.
+     attachChipPopup в status-plates.js), а не выведены сразу в открытом
+     виде — сама плашка обязана остаться такой же минималистичной, как
+     "Теги сбалансированы", независимо от того, сколько там на самом деле
+     пунктов статистики. Идёт сразу после галочки (см. порядок вставки в
+     renderStatsChip), не в конце — так виднее, что это часть одного и
+     того же "готово"-статуса, а не отдельная приписка после текста. */
+  .status-chip-info {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    margin: 0;
+    border: none;
+    background: none;
+    cursor: pointer;
+    border-radius: 50%;
   }
-  .status-plate.status-alert { color: var(--error); border-color: var(--accent-danger); }
-  .status-plate.status-ok { color: var(--ok-text); border-color: var(--accent-secondary); }
-  .status-plate.status-warning { color: var(--warning-text); border-color: var(--accent-warning); }
+  .status-chip-info:focus-visible {
+    outline: 2px solid var(--checkbox-fill);
+    outline-offset: 1px;
+  }
+  .status-chip-popup {
+    position: absolute;
+    top: calc(100% + 8px);
+    left: 0;
+    z-index: 5;
+    width: max-content;
+    max-width: min(280px, 80vw);
+    padding: 12px 14px;
+    border-radius: var(--radius-sm);
+    background: var(--card);
+    border: 1px solid var(--field-border);
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.4);
+    font-weight: 400;
+    cursor: default;
+    /* Регрессия: попап у кнопок "Сжать" рождается внутри .compress-size, а
+       у той — white-space:nowrap (чтобы "N кб → M кб" не переносилось
+       посреди значения), и это ЖЕ nowrap наследуется вниз, в сам попап,
+       из-за чего его собственный текст переставал переноситься и вылезал
+       за границы блока (ширина box'а корректно обрезалась по max-width,
+       а вот текст внутри — нет). Явно возвращаем обычный перенос, чтобы
+       попап не зависел от того, в каком родителе он оказался. */
+    white-space: normal;
+  }
+  .status-chip-popup-title {
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--label);
+    margin-bottom: 4px;
+  }
+
+  /* --- Карточка: требует внимания/действия --- */
+  .status-card {
+    width: fit-content;
+    max-width: 100%;
+    padding: 12px 14px;
+    border-radius: var(--radius-sm);
+    font-size: 13px;
+    background: var(--field-bg);
+    border: 1px solid var(--field-border);
+    /* См. .status-chip выше про cursor: default — тот же приём, тот же
+       повод (текстовый курсор браузера по умолчанию над текстом внутри). */
+    cursor: default;
+  }
+  /* Минимум 2 карточки в ряд на десктопе (см. запрос пользователя) — но
+     только там, где для этого правда есть место (см. медиа-запрос узкого
+     экрана ниже, где карточки и так уже стоят в один столбец). Половина
+     ряда минус половина gap — чтобы 2 карточки + gap между ними никогда
+     не превышали ширину самого ряда. */
+  @media (min-width: 961px) {
+    .status-card { max-width: calc(50% - 5px); }
+  }
+  .status-card-head {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    /* Отступ до списка ниже — не сама эта margin-bottom напрямую: она
+       схлопывается (стандартное поведение соседних блочных margin) с
+       margin-top:4px у .empty-attrs-list, итоговый зазор — БОЛЬШАЯ из
+       двух. Значение здесь специально выше 4px (было 2px, схлопывалось в
+       те же 4px, что и сам список) — на пару пикселей больше по запросу
+       пользователя, проверено измерением: 4px → 6px. */
+    margin-bottom: 6px;
+  }
+  .status-card-icon { flex-shrink: 0; display: flex; }
+  .status-card-title { font-weight: 700; }
+  .status-card.status-alert { border-color: var(--accent-danger); }
+  .status-card.status-alert .status-card-title { color: var(--error); }
+  .status-card.status-warning { border-color: var(--accent-warning); }
+  .status-card.status-warning .status-card-title { color: var(--warning-text); }
   /* "Можно удалить" — та же жёлтая семья, что и "надо заполнить" выше, но
      заметно светлее (см. --warning-text-light): категория не требует
      решения человека — атрибут просто лишний, удалить его можно одной
      кнопкой без риска, поэтому и тон мягче, спокойнее. */
-  .status-plate.status-warning-light { color: var(--warning-text-light); border-color: var(--accent-warning-light); }
-  /* Плашка "Удалены (не влияет на вёрстку):" (см. updateServiceCleanupStatus)
-     — серая, нейтрально-информационная: сюда попадает контентно другая
-     категория (что убрано, а не что осталось), яркий акцент здесь не нужен. */
-  .status-plate.status-muted { color: var(--label); border-color: var(--field-border); }
+  .status-card.status-warning-light { border-color: var(--accent-warning-light); }
+  .status-card.status-warning-light .status-card-title { color: var(--warning-text-light); }
   /* Плашка "Пустые атрибуты (...):"  — заголовок жирным (как остальные
      плашки), список ниже уже обычным начертанием и мельче, чтобы не
      спорить по весу с заголовком. */
@@ -453,7 +584,7 @@
      тега (см. .suggest-popup-pair). Радиус
      раньше был 999px (полная "таблетка") — на двух строках это выглядело
      бы растянутой овальной формой, поэтому радиус тот же, что и у
-     остальных плашек в интерфейсе (.option-plate/.status-plate). */
+     остальных плашек в интерфейсе (.option-plate/.status-card). */
   .suggest-popup {
     position: absolute;
     display: flex;
@@ -777,8 +908,25 @@
     white-space: pre;
     outline: none;
   }
+  /* Два независимых блока — .footer-actions ("Скопировать"/
+     "Переформатировать") и .compress-group ("Сжать") — держатся строго
+     на одном уровне (flex-wrap: nowrap), никогда не перескакивают друг
+     под друга целиком (см. запрос пользователя). Если места не хватает —
+     сжимается только ВНУТРИ каждого блока по отдельности: вторая кнопка
+     блока опускается под первую (у .footer-actions и .compress-group
+     свой собственный flex-wrap: wrap ниже), а сами два блока по-прежнему
+     стоят рядом. align-items: flex-start — когда один из блоков стал
+     двухстрочным, а другой нет, оба всё равно начинаются с одной высоты
+     сверху, а не "плавают" по центру относительно разной высоты соседа. */
   .card-footer {
     margin-top: 16px;
+    display: flex;
+    flex-wrap: nowrap;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  .footer-actions {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
@@ -805,12 +953,14 @@
     display: flex;
     flex-wrap: wrap;
     align-items: center;
+    /* Прижимает саму группу (и, если "сильное сжатие" перенеслось под
+       "умеренное" — см. .card-footer выше — то и вторую строку тоже) к
+       правому краю .card-footer: пару "Скопировать"/"Переформатировать"
+       и "Сжать" разводит по краям сам .card-footer (justify-content:
+       space-between), а этот justify-content — только про то, как две
+       .compress-frame выстраиваются ВНУТРИ уже отведённого им места. */
     justify-content: flex-end;
     gap: 10px;
-    /* Прижимает всю группу к правому краю .card-footer — "Скопировать"
-       остаётся слева, а обе кнопки "Сжать" уезжают вплотную к правой
-       границе карточки, а не липнут сразу за "Скопировать". */
-    margin-left: auto;
   }
   /* Общая рамка вокруг кнопки и ЕЁ СОБСТВЕННОГО веса "до → после" — они
      обязаны читаться как одна пара (у каждой кнопки свой результат
@@ -832,9 +982,15 @@
   }
   /* Тёмно-серая — то же нейтральное действие "почистить лишнее", что и у
      --muted-btn-bg ("Удалить все" у пустых атрибутов), не тянет на себя
-     внимание так, как основные акцентные кнопки. */
+     внимание так, как основные акцентные кнопки. Кнопка теперь иконка, а
+     не текст (см. buildCompressIcon в compress.js — 3 стрелки к центру
+     для умеренного сжатия, 6 для максимального), поэтому квадратная и по
+     центру, без обычных текстовых горизонтальных паддингов. */
   .compress-btn {
-    padding: 11px 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 9px;
     background: var(--muted-btn-bg);
     color: var(--text);
   }
@@ -857,7 +1013,31 @@
      реального форматирования: серая, не зелёная/красная — это ещё не
      настоящий результат, красить его как правдивый вес рано. */
   .compress-size-placeholder { color: var(--label); }
-  /* margin-top совпадает с .status-plates-row (см. комментарий там) —
+  /* "?" перед "0 кб → 0 кб" (см. buildCompressInfoIcon в compress.js) —
+     что именно сделает конкретно ЭТА кнопка сжатия, тот же принцип и та
+     же механика попапа (наведение+клик/тап), что и у "Типографика
+     готова"/"Артефакты очищены" (см. .status-chip-info/attachChipPopup в
+     status-plates.js) — просто здесь свой контейнер для position:relative,
+     чтобы не трогать разметку/стили самого .compress-size. */
+  .compress-info-wrap {
+    position: relative;
+    display: flex;
+    align-items: center;
+    margin-right: 6px;
+  }
+  /* Обычный .status-chip-popup раскрывается от левого края иконки вправо
+     (left: 0) — уместно для чипов типографа/очистки, они стоят ближе к
+     левому краю карточки. Кнопки "Сжать", наоборот, специально прижаты к
+     ПРАВОМУ краю карточки (.compress-group, justify-content: flex-end) —
+     раскрытие вправо там реально утыкалось в правый край страницы и
+     обрезалось (сам попап переносил текст корректно, но целиком высовывался
+     за экран). Разворачиваем в другую сторону — от правого края иконки
+     влево, туда, где действительно есть место. */
+  .compress-info-popup {
+    left: auto;
+    right: 0;
+  }
+  /* margin-top совпадает с .status-dashboard (см. комментарий там) —
      тот же отступ "кнопка → второй ряд" на симметричной карточке.
      .options-row — просто обёртка (единственный прямой ребёнок .card на
      этой grid-строке, см. subgrid у .card в CSS выше — менять число
@@ -1086,7 +1266,7 @@
     .card-label { margin-bottom: 6px; }
     .card-footer { margin-top: 8px; }
     .options-row,
-    .status-plates-row:has(.status-plate:not(:empty)) {
+    .status-dashboard:has(.status-chip:not(:empty), .status-card:not(:empty)) {
       margin-top: 10px;
     }
     .advanced-toggle { margin: 6px 0; }
@@ -1198,26 +1378,44 @@
       </div>
     </div>
     <div class="card-footer">
-      <button id="copyBtn" class="btn-secondary" type="button">Скопировать</button>
-      <button id="formatResultBtn" class="btn-primary" type="button">Форматировать результат</button>
+      <div class="footer-actions">
+        <button id="copyBtn" class="btn-secondary" type="button">Скопировать</button>
+        <button id="formatResultBtn" class="btn-primary" type="button">Переформатировать</button>
+      </div>
       <div id="compressGroup" class="compress-group">
         <div class="compress-frame">
-          <button id="compressModerateBtn" class="compress-btn" type="button">Сжать (умеренно)</button>
+          <button id="compressModerateBtn" class="compress-btn" type="button"
+                  aria-label="Сжать (умеренно)"></button>
           <span id="compressSizeModerate" class="compress-size"></span>
         </div>
         <div class="compress-frame">
-          <button id="compressMaxBtn" class="compress-btn" type="button">Сжать (максимально)</button>
+          <button id="compressMaxBtn" class="compress-btn" type="button"
+                  aria-label="Сжать (максимально)"></button>
           <span id="compressSizeMax" class="compress-size"></span>
         </div>
       </div>
     </div>
-    <div class="status-plates-row">
-      <div id="outputStatus" class="status-plate"></div>
-      <div id="quoteIssuesStatus" class="status-plate"></div>
-      <div id="emptyAttrsFillStatus" class="status-plate"></div>
-      <div id="emptyAttrsDeleteStatus" class="status-plate"></div>
-      <div id="serviceCleanupStatus" class="status-plate"></div>
-      <div id="typografyStatus" class="status-plate"></div>
+    <div class="status-dashboard" id="statusDashboard">
+      <!-- Чипы — минималистичные, "всё в порядке" (просто галочка) или
+           "статистика без действия" (галочка + синий "?" с попапом, см.
+           renderOkChip/renderStatsChip в status-plates.js). outputStatus и
+           emptyAttrsFillStatus живут ЗДЕСЬ только пока они "ок" —
+           переезжают в statusCardGrid ниже, как только появляется что
+           чинить (см. reparentStatusEl). -->
+      <div class="status-chip-row" id="statusChipRow">
+        <div id="outputStatus" class="status-chip"></div>
+        <div id="emptyAttrsFillStatus" class="status-chip"></div>
+        <div id="serviceCleanupStatus" class="status-chip"></div>
+        <div id="typografyStatus" class="status-chip"></div>
+      </div>
+      <!-- Карточки — то, что реально требует внимания/действия
+           (незакрытые теги, кавычки, пустые атрибуты). Раскладываются по
+           ширине содержимого, но не уже половины ряда (см. .status-card
+           ниже) — минимум два в ряд на десктопе. -->
+      <div class="status-card-grid" id="statusCardGrid">
+        <div id="quoteIssuesStatus" class="status-card"></div>
+        <div id="emptyAttrsDeleteStatus" class="status-card"></div>
+      </div>
     </div>
   </section>
 </main>

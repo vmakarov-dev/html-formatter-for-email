@@ -9,6 +9,8 @@
   const outputPopups = document.getElementById("outputPopups");
   const lockedTooltip = document.getElementById("lockedTooltip");
   const popupConnectors = document.getElementById("popupConnectors");
+  const statusChipRow = document.getElementById("statusChipRow");
+  const statusCardGrid = document.getElementById("statusCardGrid");
   const outputStatus = document.getElementById("outputStatus");
   const quoteIssuesStatus = document.getElementById("quoteIssuesStatus");
   const emptyAttrsFillStatus = document.getElementById("emptyAttrsFillStatus");

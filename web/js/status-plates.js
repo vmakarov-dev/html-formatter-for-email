@@ -58,8 +58,8 @@
     return mod10 === 1 && mod100 !== 11 ? "неоткрытая" : "неоткрытых";
   }
   // Согласование числительного со словом "кавычка" (1 кавычка, 2 кавычки,
-  // 5 кавычек, 11 кавычек, 21 кавычка, ...) — для плашки "Возможно: N
-  // незакрытых кавычек..." (см. updateQuoteIssuesStatus).
+  // 5 кавычек, 11 кавычек, 21 кавычка, ...) — для плашки "N незакрытых
+  // кавычек..." (см. updateQuoteIssuesStatus).
   function pluralizeQuote(n) {
     const mod10 = n % 10;
     const mod100 = n % 100;
@@ -67,6 +67,211 @@
     if (mod10 === 1) return "кавычка";
     if (mod10 >= 2 && mod10 <= 4) return "кавычки";
     return "кавычек";
+  }
+
+  // ==========================================================
+  // Статус-дэшборд: чипы (.status-chip, минималистичные — "всё ок" или
+  // статистика без действия) и карточки (.status-card — требуют внимания).
+  // См. .status-dashboard/.status-chip/.status-card в CSS. Иконки — общий
+  // визуальный язык между обоими ярусами: галочка (всегда зелёная, даже у
+  // серого по смыслу "просто статистика" чипа — см. запрос пользователя)
+  // и цветной треугольник у карточек (тот же цвет, что раньше был у рамки
+  // всей плашки целиком).
+
+  function svgIcon(inner, size) {
+    const span = document.createElement("span");
+    span.innerHTML =
+      `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" aria-hidden="true">${inner}</svg>`;
+    return span.firstChild;
+  }
+  function iconCheck() {
+    const el = svgIcon(
+      '<path d="M4 12.5L9.5 18L20 6" stroke="var(--ok-text)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>',
+      16,
+    );
+    el.className = "status-chip-icon";
+    return el;
+  }
+  const TRIANGLE_COLOR_VAR = {
+    alert: "var(--error)",
+    warning: "var(--warning-text)",
+    "warning-light": "var(--warning-text-light)",
+  };
+  function iconTriangle(cls) {
+    const c = TRIANGLE_COLOR_VAR[cls] || "var(--error)";
+    const el = svgIcon(
+      `<path d="M12 3L22 20H2L12 3Z" stroke="${c}" stroke-width="2.4" stroke-linejoin="round"/>` +
+        `<path d="M12 9.5V14" stroke="${c}" stroke-width="2.4" stroke-linecap="round"/>` +
+        `<circle cx="12" cy="16.8" r="1.2" fill="${c}"/>`,
+      15,
+    );
+    el.className = "status-card-icon";
+    return el;
+  }
+  // Голубой "?" — та же пастельная гамма, что и у отмеченного чекбокса
+  // (--checkbox-fill), намеренно НЕ красный/жёлтый: это не статус, а
+  // нейтральное "здесь есть подробности", не должен читаться как тревога.
+  // Чуть крупнее галочки (см. iconCheck) — по запросу пользователя.
+  function iconQuestion() {
+    return svgIcon(
+      '<circle cx="12" cy="12" r="9.5" stroke="var(--checkbox-fill)" stroke-width="2"/>' +
+        '<path d="M9.2 9.5C9.2 7.9 10.5 7 12 7C13.5 7 14.8 7.9 14.8 9.3C14.8 10.9 13 11.2 12.3 12.4C12.1 12.75 12 13.15 12 13.6" ' +
+        'stroke="var(--checkbox-fill)" stroke-width="1.8" stroke-linecap="round"/>' +
+        '<circle cx="12" cy="16.6" r="1.1" fill="var(--checkbox-fill)"/>',
+      18,
+    );
+  }
+
+  // Минималистичный чип "всё в порядке" — просто галочка и короткий текст,
+  // без деталей и без попапа (см. запрос пользователя: "Теги
+  // сбалансированы"/"Значимых пустых атрибутов нет" достаточно оставить
+  // как есть).
+  function renderOkChip(el, text) {
+    el.innerHTML = "";
+    el.className = "status-chip status-chip-ok";
+    el.appendChild(iconCheck());
+    const label = document.createElement("span");
+    label.className = "status-chip-label";
+    label.textContent = text;
+    el.appendChild(label);
+    reparentStatusEl(el, statusChipRow);
+  }
+
+  // Наведение (десктоп) ИЛИ клик по "?" открывают попап; клик ещё и
+  // "закрепляет" его открытым (pinned) — без этого на мобильном (нет
+  // наведения вовсе) кнопку было бы нечем открыть, а на десктопе не было
+  // бы способа удержать его открытым без мыши на месте. Клик вне чипа —
+  // снимает закрепление. Именно так пользователь и попросил: "на десктопе
+  // и при наведении, и при нажатии — на мобиле при нажатии".
+  //
+  // Наведение нарочно навешено ТОЛЬКО на саму иконку "?" и сам попап (не
+  // на весь чип целиком, см. запрос пользователя) — иначе попап открывался
+  // бы просто от наведения на галочку/текст, а не только на "?". Небольшая
+  // задержка перед скрытием (hideTimer) — чисто техническая: между иконкой
+  // и попапом есть зазор (см. top: calc(100% + 8px) в CSS), без задержки
+  // мышь успевала бы "выйти" из иконки раньше, чем "войти" в попап, и он
+  // мигал бы закрытым на пути к себе самому.
+  function attachChipPopup(infoBtn, popupEl) {
+    let pinned = false;
+    let hideTimer = null;
+    function show() {
+      clearTimeout(hideTimer);
+      popupEl.hidden = false;
+      infoBtn.setAttribute("aria-expanded", "true");
+    }
+    function hideNow() {
+      popupEl.hidden = true;
+      infoBtn.setAttribute("aria-expanded", "false");
+    }
+    function scheduleHide() {
+      clearTimeout(hideTimer);
+      hideTimer = setTimeout(() => {
+        if (!pinned) hideNow();
+      }, 150);
+    }
+    infoBtn.addEventListener("mouseenter", show);
+    infoBtn.addEventListener("mouseleave", scheduleHide);
+    popupEl.addEventListener("mouseenter", show);
+    popupEl.addEventListener("mouseleave", scheduleHide);
+    infoBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      pinned = !pinned;
+      if (pinned) show();
+      else {
+        clearTimeout(hideTimer);
+        hideNow();
+      }
+    });
+    document.addEventListener("click", (e) => {
+      if (pinned && e.target !== infoBtn && !popupEl.contains(e.target)) {
+        pinned = false;
+        clearTimeout(hideTimer);
+        hideNow();
+      }
+    });
+  }
+
+  // Чип "статистика без действия" (типограф, очистка лишнего кода) — та же
+  // галочка (см. renderOkChip), но ЕЩЁ и голубой "?" рядом: сама
+  // статистика (что именно поменяли и сколько раз) спрятана в попап,
+  // чтобы плашка не разбухала от списка на узком экране (см. запрос
+  // пользователя). items — уже без нулевых пунктов (см. CountedItem в
+  // src/formatter.ts), пустой массив просто гасит чип целиком (проверка
+  // выключена или менять было нечего).
+  function renderStatsChip(el, items, shortLabel, popupTitle) {
+    if (items.length === 0) {
+      el.textContent = "";
+      el.className = "status-chip";
+      return;
+    }
+    el.innerHTML = "";
+    el.className = "status-chip status-chip-ok";
+    el.appendChild(iconCheck());
+
+    // "?" сразу после галочки, ПЕРЕД текстом (см. запрос пользователя) —
+    // не в конце подписи.
+    const infoBtn = document.createElement("button");
+    infoBtn.type = "button";
+    infoBtn.className = "status-chip-info";
+    infoBtn.setAttribute("aria-label", "Подробнее: " + shortLabel);
+    infoBtn.setAttribute("aria-expanded", "false");
+    infoBtn.appendChild(iconQuestion());
+    el.appendChild(infoBtn);
+
+    const label = document.createElement("span");
+    label.className = "status-chip-label";
+    label.textContent = shortLabel;
+    el.appendChild(label);
+
+    const popup = document.createElement("div");
+    popup.className = "status-chip-popup";
+    popup.hidden = true;
+    const popupTitleEl = document.createElement("div");
+    popupTitleEl.className = "status-chip-popup-title";
+    popupTitleEl.textContent = popupTitle;
+    popup.appendChild(popupTitleEl);
+    const list = document.createElement("ul");
+    list.className = "empty-attrs-list";
+    for (const item of items) {
+      const li = document.createElement("li");
+      li.textContent = `${item.label}: ${item.count} ${pluralizeShtuka(item.count)}`;
+      list.appendChild(li);
+    }
+    popup.appendChild(list);
+    el.appendChild(popup);
+
+    attachChipPopup(infoBtn, popup);
+    reparentStatusEl(el, statusChipRow);
+  }
+
+  // Карточка "требует внимания" — цветной треугольник + заголовок в
+  // #status-card-head, дальше вызывающая сторона дополняет содержимым
+  // (список строк, кнопка "Удалить все" и т.п.) через buildContent.
+  function renderActionCard(el, titleText, cls, buildContent) {
+    el.innerHTML = "";
+    el.className = "status-card status-" + cls;
+    const head = document.createElement("div");
+    head.className = "status-card-head";
+    head.appendChild(iconTriangle(cls));
+    const titleEl = document.createElement("span");
+    titleEl.className = "status-card-title";
+    titleEl.textContent = titleText;
+    head.appendChild(titleEl);
+    el.appendChild(head);
+    if (buildContent) buildContent(el);
+    reparentStatusEl(el, statusCardGrid);
+  }
+
+  // outputStatus/emptyAttrsFillStatus — единственные два элемента, у
+  // которых состояние "всё ок" (чип) и "есть проблема" (карточка)
+  // взаимоисключающие и меняются от прогона к прогону: вместо двух
+  // фиксированных DOM-узлов на каждое состояние — один и тот же элемент
+  // физически переезжает между .status-chip-row и .status-card-grid (см.
+  // разметку в web/index.html). appendChild на уже присоединённый к DOM
+  // узел — стандартное поведение браузера, просто перемещает его, без
+  // клонирования и без потери навешенных на дочерние элементы обработчиков.
+  function reparentStatusEl(el, container) {
+    if (el.parentElement !== container) container.appendChild(el);
   }
 
   // Сводка справа от заголовка "Результат": сколько тегов сейчас реально
@@ -101,23 +306,35 @@
   function updateOutputStatus() {
     if (!checkUnclosedTags.checked || outputEditedManually) {
       outputStatus.textContent = "";
-      outputStatus.className = "status-plate";
+      outputStatus.className = "status-chip";
       return;
     }
     const flatTags = flatWorkingTags();
     const openCount = flatTags.length;
-    // unclosed делится на две грамматически разные подкатегории — обычные
-    // HTML-теги ("N незакрытых тегов") и Mindbox-конструкции @{for ...}/
-    // @{if ...} ("N незакрытых конструкций", см. isMindboxConstruct) —
-    // само число проблемных мест и вся механика принятия/отклонения при
-    // этом не меняются вовсе, различается только формулировка сводки.
-    const unclosedTagCount = flatTags.filter((t) => !isMindboxConstruct(t.tagName)).length;
-    const unclosedConstructCount = flatTags.filter((t) => isMindboxConstruct(t.tagName)).length;
     const allRejected =
       openCount === 0 && rejectedCount > 0 && rejectedCount === totalFlaggedCount;
-    let text;
-    let cls;
+    // "Всё ок" (и никто ничего не отклонял) — минималистичный чип, без
+    // карточки (см. renderOkChip/запрос пользователя). Как только есть
+    // хоть один незакрытый тег ИЛИ пользователь отклонил вообще все
+    // подряд (allRejected — реальная проблема осталась, просто про неё
+    // перестали напоминать) — переезжает в карточку среди "требует
+    // внимания" (см. renderActionCard).
+    if (openCount === 0 && !allRejected) {
+      let text = "Теги сбалансированы";
+      if (rejectedCount > 0) text += ` (отклонённые - ${rejectedCount})`;
+      renderOkChip(outputStatus, text);
+      return;
+    }
+    let title;
     if (openCount > 0) {
+      // unclosed делится на две грамматически разные подкатегории —
+      // обычные HTML-теги ("N незакрытых тегов") и Mindbox-конструкции
+      // @{for ...}/@{if ...} ("N незакрытых конструкций", см.
+      // isMindboxConstruct) — само число проблемных мест и вся механика
+      // принятия/отклонения при этом не меняются вовсе, различается
+      // только формулировка сводки.
+      const unclosedTagCount = flatTags.filter((t) => !isMindboxConstruct(t.tagName)).length;
+      const unclosedConstructCount = flatTags.filter((t) => isMindboxConstruct(t.tagName)).length;
       const clauses = [];
       if (unclosedTagCount > 0) {
         clauses.push(`${unclosedTagCount} ${unclosedAdjective(unclosedTagCount)} ${pluralizeTag(unclosedTagCount)}`);
@@ -127,29 +344,23 @@
           `${unclosedConstructCount} ${unclosedFeminineAdjective(unclosedConstructCount)} ${pluralizeConstruct(unclosedConstructCount)}`,
         );
       }
-      text = `Возможно: ${clauses.join(", ")}`;
-      cls = "status-alert";
-    } else if (allRejected) {
-      text = "Возможны проблемы с тегами";
-      cls = "status-alert";
+      title = clauses.join(", ");
     } else {
-      text = "Теги сбалансированы";
-      cls = "status-ok";
+      title = "Возможны проблемы с тегами";
     }
     if (rejectedCount > 0) {
-      text += ` (отклонённые - ${rejectedCount})`;
+      title += ` (отклонённые - ${rejectedCount})`;
     }
-    outputStatus.innerHTML = "";
-    outputStatus.className = "status-plate " + cls;
-    outputStatus.appendChild(document.createTextNode(text));
-    // Список тегов под сводкой — тот же приём, что и у "Пустые атрибуты"
-    // (см. renderEmptyAttrsPlate): имя тега, через двоеточие — строки, где
-    // он отмечен, номер строки кликабелен. Только КРАСНЫЕ флажки
-    // (lastOpenFlags — строка самой проблемы), серые строки-подсказки
-    // (lastCloseFlags) в список не попадают — они не место самого
-    // дефекта, а лишь предполагаемое место починки, и уже видны как
-    // отдельная серая строка прямо в выводе.
-    if (openCount > 0) outputStatus.appendChild(buildTagFlagList());
+    renderActionCard(outputStatus, title, "alert", (el) => {
+      // Список тегов под заголовком — тот же приём, что и у "Пустые
+      // атрибуты" (см. renderEmptyAttrsPlate): имя тега, через двоеточие
+      // — строки, где он отмечен, номер строки кликабелен. Только
+      // КРАСНЫЕ флажки (lastOpenFlags — строка самой проблемы), серые
+      // строки-подсказки (lastCloseFlags) в список не попадают — они не
+      // место самого дефекта, а лишь предполагаемое место починки, и уже
+      // видны как отдельная серая строка прямо в выводе.
+      if (openCount > 0) el.appendChild(buildTagFlagList());
+    });
   }
 
   // Группирует lastOpenFlags — обычные (не входящие ни в цепочку, ни в
@@ -198,7 +409,7 @@
     return list;
   }
 
-  // Плашка "Возможно: N незакрытых кавычек, M неоткрытых кавычек:" (см.
+  // Плашка "N незакрытых кавычек, M неоткрытых кавычек:" (см.
   // QuoteIssue/findQuoteIssues в src/formatter.ts) — часть той же
   // проверки "Проверить целостность тегов" (тот же чекбокс, что и у
   // outputStatus/workingTags), но чисто информационная: в отличие от
@@ -206,18 +417,30 @@
   // отклонить конкретное вхождение — кавычка уже не может сломать
   // структуру дерева/тегов (см. justSawEquals в src/parser.ts), только
   // предупреждаем о подозрительном месте. lastUnclosedQuoteAttrs/
-  // lastUnopenedQuoteAttrs обновляются в applyFormatResult, те же
-  // правила показа/молчания (выключенный чекбокс или ручная правка
-  // вывода — молчим), что и у остальных сводок.
+  // lastUnopenedQuoteAttrs обновляются в applyFormatResult, а при ручной
+  // правке вывода — ещё и в checkQuoteIssuesResolvedAndReformat.
+  //
+  // В отличие от остальных сводок, ручная правка вывода эту плашку НЕ
+  // заглушает. У других плашек молчание оправдано: их данные (номера
+  // строк подсказок) после правки уже ничем не подкреплены, а обновить их
+  // нечем — попап знает только про своё вхождение. У кавычек же есть
+  // отдельная перепроверка по таймеру (см. scheduleQuoteFixCheck), которая
+  // пересчитывает диагностику целиком и держит эти два списка свежими, —
+  // значит и заглушать нечего.
+  //
+  // Реальный баг, найденный пользователем: пользователь чинит ОДНУ из
+  // двух кавычек прямо в выводе, а плашка пропадает ЦЕЛИКОМ — вместе с
+  // предупреждением о второй, ещё не исправленной. Приходилось жать
+  // "Переформатировать", чтобы вернуть его.
   function updateQuoteIssuesStatus() {
-    const active = checkUnclosedTags.checked && !outputEditedManually;
+    const active = checkUnclosedTags.checked;
     const unclosed = active ? lastUnclosedQuoteAttrs : [];
     const unopened = active ? lastUnopenedQuoteAttrs : [];
     const unclosedCount = unclosed.reduce((sum, g) => sum + g.locations.length, 0);
     const unopenedCount = unopened.reduce((sum, g) => sum + g.locations.length, 0);
     if (unclosedCount === 0 && unopenedCount === 0) {
       quoteIssuesStatus.textContent = "";
-      quoteIssuesStatus.className = "status-plate";
+      quoteIssuesStatus.className = "status-card";
       return;
     }
     const clauses = [];
@@ -231,28 +454,24 @@
         `${unopenedCount} ${unopenedFeminineAdjective(unopenedCount)} ${pluralizeQuote(unopenedCount)}`,
       );
     }
-    quoteIssuesStatus.innerHTML = "";
-    quoteIssuesStatus.className = "status-plate status-alert";
-    const titleEl = document.createElement("div");
-    titleEl.className = "empty-attrs-title";
-    titleEl.textContent = `Возможно: ${clauses.join(", ")}`;
-    quoteIssuesStatus.appendChild(titleEl);
-    const list = document.createElement("ul");
-    list.className = "empty-attrs-list";
-    for (const group of [...unclosed, ...unopened]) {
-      const li = document.createElement("li");
-      li.appendChild(document.createTextNode(`${group.attrName}: `));
-      group.locations.forEach(({ line }, i) => {
-        if (i > 0) li.appendChild(document.createTextNode(", "));
-        const link = document.createElement("span");
-        link.className = "empty-attrs-line-link";
-        link.textContent = String(line + 1);
-        link.addEventListener("click", () => handleQuoteIssueLineClick(line));
-        li.appendChild(link);
-      });
-      list.appendChild(li);
-    }
-    quoteIssuesStatus.appendChild(list);
+    renderActionCard(quoteIssuesStatus, clauses.join(", "), "alert", (el) => {
+      const list = document.createElement("ul");
+      list.className = "empty-attrs-list";
+      for (const group of [...unclosed, ...unopened]) {
+        const li = document.createElement("li");
+        li.appendChild(document.createTextNode(`${group.attrName}: `));
+        group.locations.forEach(({ line }, i) => {
+          if (i > 0) li.appendChild(document.createTextNode(", "));
+          const link = document.createElement("span");
+          link.className = "empty-attrs-line-link";
+          link.textContent = String(line + 1);
+          link.addEventListener("click", () => handleQuoteIssueLineClick(line));
+          li.appendChild(link);
+        });
+        list.appendChild(li);
+      }
+      el.appendChild(list);
+    });
   }
 
   // Клик по номеру строки в плашке кавычек — просто скроллит к ней. В
@@ -279,95 +498,66 @@
   function renderEmptyAttrsPlate(el, groups, title, cls, withDeleteButton) {
     if (groups.length === 0) {
       el.textContent = "";
-      el.className = "status-plate";
+      el.className = "status-card";
       return;
     }
-    el.innerHTML = "";
-    el.className = "status-plate " + cls;
-    const titleEl = document.createElement("div");
-    titleEl.className = "empty-attrs-title";
-    titleEl.textContent = title;
-    el.appendChild(titleEl);
-    const list = document.createElement("ul");
-    list.className = "empty-attrs-list";
-    for (const group of groups) {
-      const li = document.createElement("li");
-      li.appendChild(document.createTextNode(`${group.attrName}: `));
-      group.lines.forEach((line, i) => {
-        if (i > 0) li.appendChild(document.createTextNode(", "));
-        const link = document.createElement("span");
-        link.className = "empty-attrs-line-link";
-        link.textContent = String(line + 1);
-        link.addEventListener("click", () => handleEmptyAttrLineClick(group.attrName, line));
-        li.appendChild(link);
-      });
-      list.appendChild(li);
-    }
-    el.appendChild(list);
-    if (withDeleteButton) {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "empty-attrs-delete-all";
-      btn.textContent = "Удалить все";
-      btn.addEventListener("click", deleteAllEmptyAttrs);
-      el.appendChild(btn);
-    }
+    renderActionCard(el, title, cls, (cardEl) => {
+      const list = document.createElement("ul");
+      list.className = "empty-attrs-list";
+      for (const group of groups) {
+        const li = document.createElement("li");
+        li.appendChild(document.createTextNode(`${group.attrName}: `));
+        group.lines.forEach((line, i) => {
+          if (i > 0) li.appendChild(document.createTextNode(", "));
+          const link = document.createElement("span");
+          link.className = "empty-attrs-line-link";
+          link.textContent = String(line + 1);
+          link.addEventListener("click", () => handleEmptyAttrLineClick(group.attrName, line));
+          li.appendChild(link);
+        });
+        list.appendChild(li);
+      }
+      cardEl.appendChild(list);
+      if (withDeleteButton) {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "empty-attrs-delete-all";
+        btn.textContent = "Удалить все";
+        btn.addEventListener("click", deleteAllEmptyAttrs);
+        cardEl.appendChild(btn);
+      }
+    });
   }
 
-  // Плашка "заголовок + bullet-список" для сводок, где вместо номеров
-  // строк — просто количество (см. CountedItem в src/formatter.ts):
-  // удалённые уже удалены, менять/находить их в выводе больше незачем,
-  // в отличие от renderEmptyAttrsPlate выше, ссылки на строки тут нет.
-  // items — уже без нулевых пунктов (см. removedServiceItems/
-  // typografyItems), пустой массив просто гасит плашку целиком.
-  function renderCountPlate(el, items, title, cls) {
-    if (items.length === 0) {
-      el.textContent = "";
-      el.className = "status-plate";
-      return;
-    }
-    el.innerHTML = "";
-    el.className = "status-plate " + cls;
-    const titleEl = document.createElement("div");
-    titleEl.className = "empty-attrs-title";
-    titleEl.textContent = title;
-    el.appendChild(titleEl);
-    const list = document.createElement("ul");
-    list.className = "empty-attrs-list";
-    for (const item of items) {
-      const li = document.createElement("li");
-      li.textContent = `${item.label}: ${item.count} ${pluralizeShtuka(item.count)}`;
-      list.appendChild(li);
-    }
-    el.appendChild(list);
-  }
-
-  // Плашка "Очищено (не влияет на вёрстку):" — что поменяла "Очистка
-  // лишнего кода" (class="esd-text", <tbody>, &#39; → апостроф, см.
-  // removedServiceItems/src/serviceCleanup.ts). Выключенный чекбокс или
+  // Плашка "Артефакты очищены" — что поменяла "Очистка лишнего кода"
+  // (class="esd-text", <tbody>, &#39; → апостроф, см. removedServiceItems/
+  // src/serviceCleanup.ts). Чисто информационная статистика без действия
+  // — минималистичный чип с попапом (см. renderStatsChip/запрос
+  // пользователя), а не отдельная карточка. Выключенный чекбокс или
   // ручная правка вывода — молчим, как и остальные сводки; если чекбокс
   // включён, но убирать было нечего — тоже молчим (пользователь просил
-  // не упоминать нулевые пункты, а не выводить плашку с пустым списком).
+  // не упоминать нулевые пункты, а не выводить пустой чип).
   function updateServiceCleanupStatus() {
     const active = cleanServiceAttrs.checked && !outputEditedManually;
-    renderCountPlate(
+    renderStatsChip(
       serviceCleanupStatus,
       active ? lastRemovedServiceItems : [],
+      "Артефакты очищены",
       "Очищено (не влияет на вёрстку):",
-      "status-muted",
     );
   }
 
-  // Плашка "Типографика готова:" — что поменял типограф (неразрывные
-  // пробелы/тире/кавычки, см. typografyItems/src/typograf.ts). Те же
-  // правила показа/молчания, что и у updateServiceCleanupStatus.
+  // Чип "Типографика готова" — что поменял типограф (неразрывные пробелы/
+  // тире/кавычки, см. typografyItems/src/typograf.ts). Те же правила
+  // показа/молчания и тот же принцип (статистика без действия — чип с
+  // попапом), что и у updateServiceCleanupStatus.
   function updateTypografyStatus() {
     const active = typografy.checked && !outputEditedManually;
-    renderCountPlate(
+    renderStatsChip(
       typografyStatus,
       active ? lastTypografyItems : [],
+      "Типографика готова",
       "Типографика готова:",
-      "status-ok",
     );
   }
 
@@ -385,24 +575,23 @@
     // сбалансированы" у outputStatus), а не молча оставляем обе плашки
     // пустыми: иначе не отличить "всё чисто" от "проверка выключена".
     if (active && showFill.length === 0 && showDelete.length === 0) {
-      emptyAttrsFillStatus.textContent = "Значимых пустых атрибутов нет";
-      emptyAttrsFillStatus.className = "status-plate status-ok";
+      renderOkChip(emptyAttrsFillStatus, "Значимых пустых атрибутов нет");
       emptyAttrsDeleteStatus.textContent = "";
-      emptyAttrsDeleteStatus.className = "status-plate";
+      emptyAttrsDeleteStatus.className = "status-card";
       return;
     }
     renderEmptyAttrsPlate(
       emptyAttrsFillStatus,
       showFill,
       "Пустые атрибуты (надо заполнить):",
-      "status-warning",
+      "warning",
       false,
     );
     renderEmptyAttrsPlate(
       emptyAttrsDeleteStatus,
       showDelete,
       "Пустые атрибуты (можно удалить):",
-      "status-warning-light",
+      "warning-light",
       true,
     );
   }
@@ -584,10 +773,19 @@
   // тонкостей, где именно должна была быть кавычка), просто фоновая
   // подсветка (см. .quote-issue-mark в CSS — НЕ перекрашивает сам текст,
   // золотой .tok-attr и голубой .tok-val остаются как есть) на имени
-  // атрибута и на одной уже существующей кавычке. Те же условия показа/
-  // молчания, что и у updateQuoteIssuesStatus (та же диагностика).
+  // атрибута и на одной уже существующей кавычке.
+  //
+  // Условия показа ровно те же, что и у updateQuoteIssuesStatus, и это
+  // ВАЖНО держать в паре: подсветка и плашка — две половины одной
+  // диагностики, и если одна из них замолчит без другой, пользователь
+  // увидит запись в дэшборде без подсветки в тексте (или наоборот).
+  // Именно так и было: ручная правка вывода глушила подсветку, хотя
+  // плашка уже умела обновляться (реальный баг — пользователь чинит одну
+  // из двух кавычек, вторая остаётся в списке, но подсветка у неё
+  // пропадает). Свежесть обоих списков поддерживает перепроверка по
+  // таймеру, см. scheduleQuoteFixCheck.
   function applyQuoteIssueHighlights() {
-    const active = checkUnclosedTags.checked && !outputEditedManually;
+    const active = checkUnclosedTags.checked;
     if (!active) return;
     if (lastUnclosedQuoteAttrs.length === 0 && lastUnopenedQuoteAttrs.length === 0) return;
     const index = buildAttrDomIndexByRow();

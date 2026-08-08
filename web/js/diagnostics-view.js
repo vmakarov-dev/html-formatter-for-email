@@ -88,9 +88,16 @@
           a.insertBeforeLine - b.insertBeforeLine ||
           b.tags[b.tags.length - 1].depth - a.tags[a.tags.length - 1].depth,
       );
+    // В отличие от insertions выше — БЕЗ фильтра по insertConfidence: этот
+    // якорь нужен попапу "Удалить?" (см. renderPopups в popups.js), а
+    // удаление опирается только на СОБСТВЕННУЮ, всегда точно известную
+    // строку открытия тега (t.line) — она не зависит от того, насколько
+    // мы уверены в МЕСТЕ ВСТАВКИ закрывающего (см. insertConfidence).
+    // Раньше якорь для "uncertain"-тегов не создавался вовсе, из-за чего
+    // "Удалить?" для них молча пропадал целиком (реальный баг, найден
+    // пользователем — тег с красным флажком оставался вовсе без попапа).
     const unclosedOpenByLine = new Map();
     for (const g of groups) {
-      if (g.insertConfidence !== "reliable") continue;
       for (const t of g.tags) unclosedOpenByLine.set(t.line, t);
     }
 
